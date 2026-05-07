@@ -4,6 +4,7 @@ final class RcloneRunner {
     private var process: Process?
     private var stdoutHandle: FileHandle?
     private var stderrHandle: FileHandle?
+    private var outputCoalescer: OutputCoalescer?
 
     var isRunning: Bool {
         process?.isRunning == true
@@ -50,6 +51,7 @@ final class RcloneRunner {
         let process = Process()
         let stdout = Pipe()
         let stderr = Pipe()
+        let outputCoalescer = OutputCoalescer(interval: 2.0, onOutput: onOutput)
 
         process.executableURL = URL(fileURLWithPath: rclonePath)
         process.arguments = arguments
@@ -57,13 +59,11 @@ final class RcloneRunner {
         process.standardError = stderr
 
         func attach(_ handle: FileHandle) {
-            handle.readabilityHandler = { pipe in
+            handle.readabilityHandler = { [weak outputCoalescer] pipe in
                 let data = pipe.availableData
                 guard !data.isEmpty else { return }
                 let text = String(data: data, encoding: .utf8) ?? String(decoding: data, as: UTF8.self)
-                Task { @MainActor in
-                    onOutput(text)
-                }
+                outputCoalescer?.append(text)
             }
         }
 
@@ -73,6 +73,7 @@ final class RcloneRunner {
         process.terminationHandler = { [weak self] finishedProcess in
             self?.stdoutHandle?.readabilityHandler = nil
             self?.stderrHandle?.readabilityHandler = nil
+            self?.outputCoalescer?.flush()
             Task { @MainActor in
                 onFinish(finishedProcess.terminationStatus)
             }
@@ -81,6 +82,7 @@ final class RcloneRunner {
         self.process = process
         self.stdoutHandle = stdout.fileHandleForReading
         self.stderrHandle = stderr.fileHandleForReading
+        self.outputCoalescer = outputCoalescer
 
         try process.run()
     }
@@ -132,5 +134,52 @@ final class RcloneRunner {
             "--log-file", logFile,
             "--log-level", "INFO"
         ]
+    }
+}
+
+private final class OutputCoalescer {
+    private let lock = NSLock()
+    private let interval: TimeInterval
+    private let maxPendingCharacters = 40_000
+    private var pending = ""
+    private var flushScheduled = false
+    private let onOutput: @MainActor (String) -> Void
+
+    init(interval: TimeInterval, onOutput: @escaping @MainActor (String) -> Void) {
+        self.interval = interval
+        self.onOutput = onOutput
+    }
+
+    func append(_ text: String) {
+        lock.lock()
+        pending.append(text)
+        if pending.count > maxPendingCharacters {
+            pending.removeFirst(pending.count - maxPendingCharacters)
+        }
+        let shouldSchedule = !flushScheduled
+        if shouldSchedule {
+            flushScheduled = true
+        }
+        lock.unlock()
+
+        guard shouldSchedule else { return }
+
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + interval) { [weak self] in
+            self?.flush()
+        }
+    }
+
+    func flush() {
+        lock.lock()
+        let text = pending
+        pending = ""
+        flushScheduled = false
+        lock.unlock()
+
+        guard !text.isEmpty else { return }
+
+        Task { @MainActor in
+            onOutput(text)
+        }
     }
 }

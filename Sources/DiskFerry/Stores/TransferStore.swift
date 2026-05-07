@@ -187,7 +187,6 @@ final class TransferStore: ObservableObject {
         lastMessage = dryRun ? "正在预演，不会写入目标目录。" : "正在复制。"
 
         appendOutput(commandPreview(rclonePath: resolvedRclone, logFile: logURL.path, dryRun: dryRun))
-        startLogMonitor(logFile: logURL.path)
         startProgressTicker()
         if !dryRun, task.liveHeatmapEnabled {
             startTargetProgressScanner()
