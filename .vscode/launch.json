@@ -1,0 +1,24 @@
+{
+    "configurations": [
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:safeCopy}",
+            "name": "Debug DiskFerry",
+            "target": "DiskFerry",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug DiskFerry"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:safeCopy}",
+            "name": "Release DiskFerry",
+            "target": "DiskFerry",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release DiskFerry"
+        }
+    ]
+}
