@@ -10,6 +10,7 @@ struct DiskFerryApp: App {
         WindowGroup("Disk Ferry", id: "main") {
             ContentView(store: store)
                 .frame(minWidth: 980, minHeight: 700)
+                .preferredColorScheme(.light)
         }
         .commands {
             CommandGroup(after: .newItem) {
@@ -50,6 +51,7 @@ struct DiskFerryApp: App {
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.appearance = NSAppearance(named: .aqua)
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
     }

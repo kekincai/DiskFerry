@@ -13,6 +13,7 @@ struct PathsView: View {
                 path: store.task.sourcePath,
                 placeholder: "/Volumes/PhotoDisk/Photos",
                 actionTitle: "选择...",
+                isDisabled: !store.canStart,
                 action: store.chooseSource
             )
 
@@ -21,6 +22,7 @@ struct PathsView: View {
                 path: store.task.targetPath,
                 placeholder: "/Volumes/WinBackup/PhotosBackup",
                 actionTitle: "选择...",
+                isDisabled: !store.canStart,
                 action: store.chooseTarget
             )
 
@@ -44,6 +46,7 @@ struct PathsView: View {
                 path: store.task.logDirectory,
                 placeholder: "目标目录/_transfer_logs/",
                 actionTitle: "打开",
+                isDisabled: store.task.targetPath.isEmpty,
                 action: store.openLogDirectory
             )
 
@@ -60,6 +63,7 @@ private struct PathRow: View {
     var path: String
     var placeholder: String
     var actionTitle: String
+    var isDisabled = false
     var action: () -> Void
 
     var body: some View {
@@ -77,6 +81,7 @@ private struct PathRow: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
 
             Button(actionTitle, action: action)
+                .disabled(isDisabled)
         }
     }
 }

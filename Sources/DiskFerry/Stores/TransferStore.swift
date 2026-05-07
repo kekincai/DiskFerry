@@ -15,6 +15,7 @@ final class TransferStore: ObservableObject {
     @Published var rclonePath: String
     @Published var recentTasks: [TransferTask] = []
     @Published var progress: TransferProgress = .empty
+    @Published var heatmapItems: [FolderHeatmapItem] = []
 
     private let runner = RcloneRunner()
     private let prechecker = PrecheckService()
@@ -24,8 +25,11 @@ final class TransferStore: ObservableObject {
     private var outputFlushTask: Task<Void, Never>?
     private var sourceScanTask: Task<Void, Never>?
     private var targetScanTask: Task<Void, Never>?
+    private var logMonitorTask: Task<Void, Never>?
+    private var progressTickerTask: Task<Void, Never>?
     private var lastTargetScanBytes: Int64?
     private var lastTargetScanDate: Date?
+    private var lastLogReadOffset: UInt64 = 0
     private let maxDisplayedLogCharacters = 80_000
 
     init() {
@@ -47,13 +51,15 @@ final class TransferStore: ObservableObject {
     }
 
     func chooseSource() {
-        guard let path = FileDialogs.chooseFolder() else { return }
+        guard canStart else { return }
+        guard let path = FileDialogs.chooseFolder(startingAt: task.sourcePath) else { return }
         task.sourcePath = path
         updateNameFromPaths()
     }
 
     func chooseTarget() {
-        guard let path = FileDialogs.chooseFolder() else { return }
+        guard canStart else { return }
+        guard let path = FileDialogs.chooseFolder(startingAt: task.targetPath, canCreateDirectories: true) else { return }
         task.targetPath = path
         task.refreshLogDirectory()
         updateNameFromPaths()
@@ -91,6 +97,8 @@ final class TransferStore: ObservableObject {
         lastMessage = "正在停止 rclone。已经完成的文件通常不需要重新复制。"
         sourceScanTask?.cancel()
         targetScanTask?.cancel()
+        logMonitorTask?.cancel()
+        progressTickerTask?.cancel()
         runner.stop()
     }
 
@@ -152,15 +160,21 @@ final class TransferStore: ObservableObject {
         outputFlushTask?.cancel()
         sourceScanTask?.cancel()
         targetScanTask?.cancel()
+        logMonitorTask?.cancel()
+        progressTickerTask?.cancel()
         lastTargetScanBytes = nil
         lastTargetScanDate = nil
+        lastLogReadOffset = 0
         outputText = ""
+        heatmapItems = []
         progress = TransferProgress(isScanningSource: true)
         status = dryRun ? .dryRunning : .running
         lastMessage = dryRun ? "正在预演，不会写入目标目录。" : "正在复制。"
 
         appendOutput(commandPreview(rclonePath: resolvedRclone, logFile: logURL.path, dryRun: dryRun))
         scanSourceSummary()
+        startLogMonitor(logFile: logURL.path)
+        startProgressTicker()
         if !dryRun {
             startTargetProgressScanner()
         }
@@ -192,6 +206,8 @@ final class TransferStore: ObservableObject {
         flushOutputNow()
         sourceScanTask?.cancel()
         targetScanTask?.cancel()
+        logMonitorTask?.cancel()
+        progressTickerTask?.cancel()
 
         if isStopping {
             status = .cancelled
@@ -292,27 +308,89 @@ final class TransferStore: ObservableObject {
 
     private func startTargetProgressScanner() {
         let targetPath = task.resolvedTargetPath
+        let sourcePath = task.sourcePath
+        let excludes = task.excludes
         targetScanTask = Task { [weak self] in
             while !Task.isCancelled {
-                let summary = await Task.detached(priority: .utility) {
-                    SourceScanner.scan(path: targetPath, excludes: ["_transfer_logs/**"])
+                let result = await Task.detached(priority: .utility) {
+                    let heatmap = HeatmapScanner.scan(sourcePath: sourcePath, targetPath: targetPath, excludes: excludes)
+                    let summary = HeatmapScanner.aggregateTargetSummary(from: heatmap)
+                    return (summary: summary, heatmap: heatmap)
                 }.value
 
                 await MainActor.run { [weak self] in
                     guard let self, !Task.isCancelled else { return }
                     let now = Date()
                     self.progress.applyTargetSummary(
-                        summary,
+                        result.summary,
                         previousBytes: self.lastTargetScanBytes,
                         previousDate: self.lastTargetScanDate,
                         date: now
                     )
-                    self.lastTargetScanBytes = summary.totalBytes
+                    self.heatmapItems = result.heatmap
+                    self.lastTargetScanBytes = result.summary.totalBytes
                     self.lastTargetScanDate = now
+                }
+
+                try? await Task.sleep(for: .seconds(3))
+            }
+        }
+    }
+
+    private func startProgressTicker() {
+        progressTickerTask = Task { [weak self] in
+            while !Task.isCancelled {
+                await MainActor.run { [weak self] in
+                    guard let self, !Task.isCancelled else { return }
+                    self.progress.updateElapsedEstimate(startedAt: self.startedAt, now: Date())
+                }
+                try? await Task.sleep(for: .seconds(1))
+            }
+        }
+    }
+
+    private func startLogMonitor(logFile: String) {
+        logMonitorTask = Task { [weak self] in
+            while !Task.isCancelled {
+                let offset = await MainActor.run {
+                    self?.lastLogReadOffset ?? 0
+                }
+                let chunk = await Task.detached(priority: .utility) {
+                    Self.readLogChunk(path: logFile, offset: offset)
+                }.value
+
+                if let chunk {
+                    await MainActor.run { [weak self] in
+                        guard let self, !Task.isCancelled else { return }
+                        self.lastLogReadOffset = chunk.nextOffset
+                        if !chunk.text.isEmpty {
+                            RcloneStatsParser.apply(chunk.text, to: &self.progress)
+                        }
+                    }
                 }
 
                 try? await Task.sleep(for: .seconds(5))
             }
+        }
+    }
+
+    nonisolated private static func readLogChunk(path: String, offset: UInt64) -> LogChunk? {
+        guard let handle = try? FileHandle(forReadingFrom: URL(fileURLWithPath: path)) else {
+            return nil
+        }
+        defer {
+            try? handle.close()
+        }
+
+        let fileSize = (try? FileManager.default.attributesOfItem(atPath: path)[.size] as? UInt64) ?? 0
+        let safeOffset = min(offset, fileSize)
+        do {
+            try handle.seek(toOffset: safeOffset)
+            let data = try handle.readToEnd() ?? Data()
+            let text = String(data: data, encoding: .utf8) ?? String(decoding: data, as: UTF8.self)
+            return LogChunk(text: text, nextOffset: fileSize)
+        } catch {
+            return nil
         }
     }
 
@@ -343,4 +421,9 @@ final class TransferStore: ObservableObject {
         }
         return "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
     }
+}
+
+private struct LogChunk {
+    var text: String
+    var nextOffset: UInt64
 }

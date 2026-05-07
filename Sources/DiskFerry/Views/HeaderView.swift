@@ -56,7 +56,7 @@ private struct ProgressStrip: View {
                     .monospacedDigit()
                     .frame(width: 76, alignment: .leading)
 
-                ProgressView(value: progress.fraction)
+                WaveProgressView(fraction: progress.fraction)
                     .frame(maxWidth: .infinity)
 
                 Text(progress.etaText.map { "剩余 \($0)" } ?? "剩余 -")

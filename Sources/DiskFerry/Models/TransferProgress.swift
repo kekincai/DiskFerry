@@ -76,6 +76,29 @@ struct TransferProgress: Equatable {
         progressSource = .targetScan
     }
 
+    mutating func updateElapsedEstimate(startedAt: Date?, now: Date) {
+        guard let startedAt,
+              let transferredBytes,
+              let totalBytes,
+              transferredBytes > 0,
+              totalBytes > transferredBytes else {
+            return
+        }
+
+        let elapsed = now.timeIntervalSince(startedAt)
+        guard elapsed > 0 else { return }
+
+        let averageBytesPerSecond = Double(transferredBytes) / elapsed
+        guard averageBytesPerSecond > 0 else { return }
+
+        if speedText == nil || progressSource == .targetScan || progressSource == .sourceScanned {
+            speedText = TransferFormatters.bytes.string(fromByteCount: Int64(averageBytesPerSecond)) + "/s"
+        }
+
+        let remainingBytes = totalBytes - transferredBytes
+        etaText = formatDuration(TimeInterval(Double(remainingBytes) / averageBytesPerSecond))
+    }
+
     mutating func markFinished() {
         if let totalFiles {
             transferredFiles = totalFiles

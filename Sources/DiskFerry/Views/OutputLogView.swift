@@ -2,12 +2,10 @@ import SwiftUI
 
 struct OutputLogView: View {
     var text: String
+    @State private var isExpanded = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("rclone 输出日志")
-                .font(.headline)
-
+        DisclosureGroup(isExpanded: $isExpanded) {
             ScrollViewReader { proxy in
                 ScrollView {
                     Text(text.isEmpty ? "rclone 的 stdout / stderr 会显示在这里。" : text)
@@ -24,6 +22,10 @@ struct OutputLogView: View {
                     proxy.scrollTo("bottom", anchor: .bottom)
                 }
             }
+            .padding(.top, 8)
+        } label: {
+            Label("rclone 输出日志", systemImage: "terminal")
+                .font(.headline)
         }
         .panelStyle()
     }
