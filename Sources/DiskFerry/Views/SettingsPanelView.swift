@@ -41,6 +41,20 @@ struct SettingsPanelView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
+            Toggle(isOn: $store.task.liveHeatmapEnabled) {
+                Text("复制时实时刷新热力图")
+            }
+            .disabled(!store.canStart)
+
+            Toggle(isOn: $store.task.liveLogPreviewEnabled) {
+                Text("复制时实时显示日志内容")
+            }
+            .disabled(!store.canStart)
+
+            Text("为保证 macOS 前台流畅，热力图和日志预览默认关闭；完整日志仍写入目标盘。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
             LazyVGrid(columns: [.init(.adaptive(minimum: 170), spacing: 8)], alignment: .leading, spacing: 8) {
                 ForEach(store.task.excludes, id: \.self) { exclude in
                     Label(exclude, systemImage: "checkmark.circle")

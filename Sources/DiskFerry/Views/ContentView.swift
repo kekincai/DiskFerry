@@ -13,7 +13,11 @@ struct ContentView: View {
                 Divider()
                 ScrollView {
                     VStack(alignment: .leading, spacing: 18) {
-                        HeatmapView(items: store.heatmapItems)
+                        HeatmapView(
+                            lastRefresh: store.lastHeatmapRefresh,
+                            items: store.heatmapItems,
+                            onRefresh: store.refreshHeatmapOnce
+                        )
                         PathsView(store: store)
                         SettingsPanelView(store: store)
                         ActionBarView(store: store)

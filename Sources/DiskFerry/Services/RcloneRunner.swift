@@ -102,7 +102,7 @@ final class RcloneRunner {
         }
 
         arguments.append(contentsOf: [
-            "--stats", "1s",
+            "--stats", "2s",
             "--stats-log-level", "NOTICE",
             "--transfers", "\(task.transfers)",
             "--checkers", "\(task.checkers)",

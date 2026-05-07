@@ -16,6 +16,7 @@ final class TransferStore: ObservableObject {
     @Published var recentTasks: [TransferTask] = []
     @Published var progress: TransferProgress = .empty
     @Published var heatmapItems: [FolderHeatmapItem] = []
+    @Published var lastHeatmapRefresh: Date?
 
     private let runner = RcloneRunner()
     private let prechecker = PrecheckService()
@@ -116,6 +117,20 @@ final class TransferStore: ObservableObject {
         lastMessage = "已载入任务：\(recent.name)"
     }
 
+    func refreshHeatmapOnce() {
+        guard !task.sourcePath.isEmpty, !task.resolvedTargetPath.isEmpty else { return }
+        let sourcePath = task.sourcePath
+        let targetPath = task.resolvedTargetPath
+        let excludes = task.excludes
+        Task.detached(priority: .utility) {
+            let heatmap = HeatmapScanner.scan(sourcePath: sourcePath, targetPath: targetPath, excludes: excludes, limit: 120)
+            await MainActor.run { [weak self] in
+                self?.heatmapItems = heatmap
+                self?.lastHeatmapRefresh = Date()
+            }
+        }
+    }
+
     private func start(dryRun: Bool) {
         guard canStart else { return }
 
@@ -174,7 +189,7 @@ final class TransferStore: ObservableObject {
         appendOutput(commandPreview(rclonePath: resolvedRclone, logFile: logURL.path, dryRun: dryRun))
         startLogMonitor(logFile: logURL.path)
         startProgressTicker()
-        if !dryRun {
+        if !dryRun, task.liveHeatmapEnabled {
             startTargetProgressScanner()
         }
 
@@ -329,6 +344,8 @@ final class TransferStore: ObservableObject {
 
     private func appendOutput(_ text: String) {
         RcloneStatsParser.apply(text, to: &progress)
+        guard task.liveLogPreviewEnabled else { return }
+
         pendingOutput.append(text)
 
         if pendingOutput.count > maxDisplayedLogCharacters {
@@ -395,7 +412,7 @@ final class TransferStore: ObservableObject {
                     self.lastTargetScanDate = now
                 }
 
-                try? await Task.sleep(for: .seconds(3))
+                try? await Task.sleep(for: .seconds(10))
             }
         }
     }
@@ -407,7 +424,7 @@ final class TransferStore: ObservableObject {
                     guard let self, !Task.isCancelled else { return }
                     self.progress.updateElapsedEstimate(startedAt: self.startedAt, now: Date())
                 }
-                try? await Task.sleep(for: .seconds(1))
+                try? await Task.sleep(for: .seconds(2))
             }
         }
     }
@@ -432,7 +449,7 @@ final class TransferStore: ObservableObject {
                     }
                 }
 
-                try? await Task.sleep(for: .seconds(5))
+                try? await Task.sleep(for: .seconds(2))
             }
         }
     }

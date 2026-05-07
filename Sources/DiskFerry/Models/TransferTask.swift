@@ -15,6 +15,8 @@ struct TransferTask: Codable, Identifiable, Equatable {
     var excludes: [String]
     var verifyMode: VerifyMode
     var verifyAfterCopy: Bool
+    var liveHeatmapEnabled: Bool
+    var liveLogPreviewEnabled: Bool
     var createdAt: Date
 
     static let defaultExcludes = [
@@ -42,6 +44,8 @@ struct TransferTask: Codable, Identifiable, Equatable {
             excludes: TransferTask.defaultExcludes,
             verifyMode: .sizeOnly,
             verifyAfterCopy: false,
+            liveHeatmapEnabled: false,
+            liveLogPreviewEnabled: false,
             createdAt: Date()
         )
     }

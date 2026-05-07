@@ -1,7 +1,9 @@
 import SwiftUI
 
 struct HeatmapView: View {
+    var lastRefresh: Date?
     var items: [FolderHeatmapItem]
+    var onRefresh: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -9,13 +11,23 @@ struct HeatmapView: View {
                 Text("文件夹热力图")
                     .font(.headline)
                 Spacer()
+                if let lastRefresh {
+                    Text("更新于 \(lastRefresh.formatted(date: .omitted, time: .standard))")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Button {
+                    onRefresh()
+                } label: {
+                    Label("刷新", systemImage: "arrow.clockwise")
+                }
                 Text("颜色越深，复制越接近完成")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
             if items.isEmpty {
-                Text("开始复制后，这里会显示源目录第一层子文件夹和文件的复制状态。")
+                Text("默认不自动扫描，以保证复制时窗口滚动流畅。需要查看子文件夹状态时点“刷新”。")
                     .foregroundStyle(.secondary)
             } else {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 74), spacing: 8)], spacing: 8) {
