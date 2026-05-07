@@ -60,13 +60,31 @@ struct TransferTask: Codable, Identifiable, Equatable {
     }
 
     mutating func refreshLogDirectory() {
-        guard !targetPath.isEmpty else {
+        let destination = resolvedTargetPath
+        guard !destination.isEmpty else {
             logDirectory = ""
             return
         }
-        logDirectory = URL(fileURLWithPath: targetPath)
+        logDirectory = URL(fileURLWithPath: destination)
             .appendingPathComponent("_transfer_logs")
             .path
+    }
+
+    var resolvedTargetPath: String {
+        guard !sourcePath.isEmpty, !targetPath.isEmpty else { return targetPath }
+
+        let targetURL = URL(fileURLWithPath: targetPath)
+        let values = try? targetURL.resourceValues(forKeys: [.volumeURLKey])
+        let volumePath = values?.volume?.standardizedFileURL.path
+        let standardizedTarget = targetURL.standardizedFileURL.path
+
+        guard standardizedTarget == volumePath, targetPath.hasPrefix("/Volumes/") else {
+            return targetPath
+        }
+
+        let sourceName = URL(fileURLWithPath: sourcePath).lastPathComponent
+        guard !sourceName.isEmpty else { return targetPath }
+        return targetURL.appendingPathComponent(sourceName, isDirectory: true).path
     }
 }
 

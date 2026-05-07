@@ -24,6 +24,21 @@ struct PathsView: View {
                 action: store.chooseTarget
             )
 
+            if let targetHint = PathInspector.volumeHint(for: store.task.targetPath) {
+                Label(targetHint, systemImage: "externaldrive.connected.to.line.below")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+
+            if !store.task.resolvedTargetPath.isEmpty,
+               store.task.resolvedTargetPath != store.task.targetPath {
+                Label("实际写入位置：\(store.task.resolvedTargetPath)", systemImage: "folder.badge.plus")
+                    .font(.caption)
+                    .foregroundStyle(.primary)
+                    .textSelection(.enabled)
+            }
+
             PathRow(
                 title: "日志目录",
                 path: store.task.logDirectory,

@@ -31,9 +31,27 @@ struct PrecheckService {
             missingMessage: "目标目录不存在，可能是 SMB 连接已经断开。"
         ))
 
+        let resolvedTargetPath = task.resolvedTargetPath
+        if !resolvedTargetPath.isEmpty, resolvedTargetPath != task.targetPath {
+            do {
+                try fileManager.createDirectory(atPath: resolvedTargetPath, withIntermediateDirectories: true)
+                items.append(.init(
+                    title: "实际写入位置",
+                    message: "将复制到：\(resolvedTargetPath)",
+                    severity: .ok
+                ))
+            } catch {
+                items.append(.init(
+                    title: "实际写入位置",
+                    message: "无法创建目标子文件夹：\(error.localizedDescription)",
+                    severity: .error
+                ))
+            }
+        }
+
         if !task.sourcePath.isEmpty,
-           !task.targetPath.isEmpty,
-           URL(fileURLWithPath: task.sourcePath).standardizedFileURL == URL(fileURLWithPath: task.targetPath).standardizedFileURL {
+           !resolvedTargetPath.isEmpty,
+           URL(fileURLWithPath: task.sourcePath).standardizedFileURL == URL(fileURLWithPath: resolvedTargetPath).standardizedFileURL {
             items.append(.init(title: "路径检查", message: "源目录和目标目录不能相同。", severity: .error))
         }
 
@@ -46,7 +64,7 @@ struct PrecheckService {
         }
 
         let logDirectory = task.logDirectory.isEmpty
-            ? URL(fileURLWithPath: task.targetPath).appendingPathComponent("_transfer_logs").path
+            ? URL(fileURLWithPath: resolvedTargetPath).appendingPathComponent("_transfer_logs").path
             : task.logDirectory
 
         if !task.targetPath.isEmpty {
@@ -78,7 +96,7 @@ struct PrecheckService {
         }
 
         if let sourceSize = directoryAllocatedSize(atPath: task.sourcePath),
-           let targetFree = freeBytes(forPath: task.targetPath),
+           let targetFree = freeBytes(forPath: resolvedTargetPath),
            sourceSize > targetFree {
             items.append(.init(
                 title: "目标剩余空间",

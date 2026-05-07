@@ -14,11 +14,19 @@ final class TransferStore: ObservableObject {
     @Published var finishedAt: Date?
     @Published var rclonePath: String
     @Published var recentTasks: [TransferTask] = []
+    @Published var progress: TransferProgress = .empty
 
     private let runner = RcloneRunner()
     private let prechecker = PrecheckService()
     private let storage = TaskStorage()
     private var isStopping = false
+    private var pendingOutput = ""
+    private var outputFlushTask: Task<Void, Never>?
+    private var sourceScanTask: Task<Void, Never>?
+    private var targetScanTask: Task<Void, Never>?
+    private var lastTargetScanBytes: Int64?
+    private var lastTargetScanDate: Date?
+    private let maxDisplayedLogCharacters = 80_000
 
     init() {
         self.task = .empty
@@ -81,12 +89,14 @@ final class TransferStore: ObservableObject {
         isStopping = true
         status = .stopping
         lastMessage = "正在停止 rclone。已经完成的文件通常不需要重新复制。"
+        sourceScanTask?.cancel()
+        targetScanTask?.cancel()
         runner.stop()
     }
 
     func openLogDirectory() {
         let path = task.logDirectory.isEmpty
-            ? URL(fileURLWithPath: task.targetPath).appendingPathComponent("_transfer_logs").path
+            ? URL(fileURLWithPath: task.resolvedTargetPath).appendingPathComponent("_transfer_logs").path
             : task.logDirectory
         NSWorkspace.shared.open(URL(fileURLWithPath: path, isDirectory: true))
     }
@@ -138,11 +148,22 @@ final class TransferStore: ObservableObject {
         startedAt = startDate
         finishedAt = nil
         isStopping = false
+        pendingOutput = ""
+        outputFlushTask?.cancel()
+        sourceScanTask?.cancel()
+        targetScanTask?.cancel()
+        lastTargetScanBytes = nil
+        lastTargetScanDate = nil
         outputText = ""
+        progress = TransferProgress(isScanningSource: true)
         status = dryRun ? .dryRunning : .running
         lastMessage = dryRun ? "正在预演，不会写入目标目录。" : "正在复制。"
 
         appendOutput(commandPreview(rclonePath: resolvedRclone, logFile: logURL.path, dryRun: dryRun))
+        scanSourceSummary()
+        if !dryRun {
+            startTargetProgressScanner()
+        }
 
         do {
             try runner.start(
@@ -168,6 +189,9 @@ final class TransferStore: ObservableObject {
     private func finish(exitCode: Int32, dryRun: Bool, summaryURL: URL) {
         let endDate = Date()
         finishedAt = endDate
+        flushOutputNow()
+        sourceScanTask?.cancel()
+        targetScanTask?.cancel()
 
         if isStopping {
             status = .cancelled
@@ -178,6 +202,9 @@ final class TransferStore: ObservableObject {
 
         if exitCode == 0 {
             status = .completed
+            if !dryRun {
+                progress.markFinished()
+            }
             lastMessage = dryRun ? "预演完成。" : "复制完成。"
             writeSummary(status: dryRun ? "dry-run-completed" : "completed", finishedAt: endDate, summaryURL: summaryURL)
             saveRecentTask()
@@ -193,7 +220,7 @@ final class TransferStore: ObservableObject {
         let summary = TransferSummary(
             taskName: task.name,
             source: task.sourcePath,
-            target: task.targetPath,
+            target: task.resolvedTargetPath,
             startedAt: startedAt ?? Date(),
             finishedAt: finishedAt,
             status: status,
@@ -222,9 +249,70 @@ final class TransferStore: ObservableObject {
     }
 
     private func appendOutput(_ text: String) {
-        outputText.append(text)
-        if outputText.count > 300_000 {
-            outputText.removeFirst(outputText.count - 300_000)
+        RcloneStatsParser.apply(text, to: &progress)
+        pendingOutput.append(text)
+
+        if pendingOutput.count > maxDisplayedLogCharacters {
+            pendingOutput.removeFirst(pendingOutput.count - maxDisplayedLogCharacters)
+        }
+
+        guard outputFlushTask == nil else { return }
+        outputFlushTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(700))
+            await MainActor.run {
+                self?.flushOutputNow()
+            }
+        }
+    }
+
+    private func flushOutputNow() {
+        outputFlushTask?.cancel()
+        outputFlushTask = nil
+
+        guard !pendingOutput.isEmpty else { return }
+        outputText.append(pendingOutput)
+        pendingOutput = ""
+
+        if outputText.count > maxDisplayedLogCharacters {
+            outputText.removeFirst(outputText.count - maxDisplayedLogCharacters)
+        }
+    }
+
+    private func scanSourceSummary() {
+        let sourcePath = task.sourcePath
+        let excludes = task.excludes
+        sourceScanTask = Task.detached(priority: .utility) {
+            let summary = SourceScanner.scan(path: sourcePath, excludes: excludes)
+            await MainActor.run { [weak self] in
+                guard let self, !Task.isCancelled else { return }
+                self.progress.apply(sourceSummary: summary)
+            }
+        }
+    }
+
+    private func startTargetProgressScanner() {
+        let targetPath = task.resolvedTargetPath
+        targetScanTask = Task { [weak self] in
+            while !Task.isCancelled {
+                let summary = await Task.detached(priority: .utility) {
+                    SourceScanner.scan(path: targetPath, excludes: ["_transfer_logs/**"])
+                }.value
+
+                await MainActor.run { [weak self] in
+                    guard let self, !Task.isCancelled else { return }
+                    let now = Date()
+                    self.progress.applyTargetSummary(
+                        summary,
+                        previousBytes: self.lastTargetScanBytes,
+                        previousDate: self.lastTargetScanDate,
+                        date: now
+                    )
+                    self.lastTargetScanBytes = summary.totalBytes
+                    self.lastTargetScanDate = now
+                }
+
+                try? await Task.sleep(for: .seconds(5))
+            }
         }
     }
 

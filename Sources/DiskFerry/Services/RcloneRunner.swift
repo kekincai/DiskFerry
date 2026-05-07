@@ -65,7 +65,7 @@ final class RcloneRunner {
         var arguments = [
             "copy",
             task.sourcePath,
-            task.targetPath
+            task.resolvedTargetPath
         ]
 
         if dryRun {
@@ -73,7 +73,8 @@ final class RcloneRunner {
         }
 
         arguments.append(contentsOf: [
-            "--progress",
+            "--stats", "5s",
+            "--stats-one-line",
             "--transfers", "\(task.transfers)",
             "--checkers", "\(task.checkers)",
             "--retries", "\(task.retries)",
