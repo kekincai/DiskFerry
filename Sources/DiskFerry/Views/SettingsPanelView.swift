@@ -32,6 +32,15 @@ struct SettingsPanelView: View {
             }
             .disabled(true)
 
+            Toggle(isOn: $store.task.verifyAfterCopy) {
+                Text("复制完成后执行 size-only 校验")
+            }
+            .disabled(!store.canStart)
+
+            Text("默认关闭。校验会再次读取目录元数据，适合复制完成后手动确认，不影响正常复制速度。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
             LazyVGrid(columns: [.init(.adaptive(minimum: 170), spacing: 8)], alignment: .leading, spacing: 8) {
                 ForEach(store.task.excludes, id: \.self) { exclude in
                     Label(exclude, systemImage: "checkmark.circle")

@@ -43,11 +43,11 @@ final class TransferStore: ObservableObject {
     }
 
     var canStart: Bool {
-        ![.running, .dryRunning, .prechecking, .stopping].contains(status)
+        ![.running, .dryRunning, .verifying, .prechecking, .stopping].contains(status)
     }
 
     var canStop: Bool {
-        [.running, .dryRunning].contains(status)
+        [.running, .dryRunning, .verifying].contains(status)
     }
 
     func chooseSource() {
@@ -167,12 +167,11 @@ final class TransferStore: ObservableObject {
         lastLogReadOffset = 0
         outputText = ""
         heatmapItems = []
-        progress = TransferProgress(isScanningSource: true)
+        progress = .empty
         status = dryRun ? .dryRunning : .running
         lastMessage = dryRun ? "正在预演，不会写入目标目录。" : "正在复制。"
 
         appendOutput(commandPreview(rclonePath: resolvedRclone, logFile: logURL.path, dryRun: dryRun))
-        scanSourceSummary()
         startLogMonitor(logFile: logURL.path)
         startProgressTicker()
         if !dryRun {
@@ -217,19 +216,83 @@ final class TransferStore: ObservableObject {
         }
 
         if exitCode == 0 {
-            status = .completed
-            if !dryRun {
-                progress.markFinished()
+            if !dryRun, task.verifyAfterCopy {
+                startVerification(summaryURL: summaryURL)
+            } else {
+                status = .completed
+                if !dryRun {
+                    progress.markFinished()
+                }
+                lastMessage = dryRun ? "预演完成。" : "复制完成。"
+                writeSummary(status: dryRun ? "dry-run-completed" : "completed", finishedAt: endDate, summaryURL: summaryURL)
+                saveRecentTask()
             }
-            lastMessage = dryRun ? "预演完成。" : "复制完成。"
-            writeSummary(status: dryRun ? "dry-run-completed" : "completed", finishedAt: endDate, summaryURL: summaryURL)
-            saveRecentTask()
         } else {
             status = .failed
             lastMessage = "rclone 退出码：\(exitCode)。请查看日志。"
             writeSummary(status: "failed", finishedAt: endDate, summaryURL: summaryURL)
             saveRecentTask()
         }
+    }
+
+    private func startVerification(summaryURL: URL) {
+        guard let resolvedRclone = RcloneLocator.locate(preferredPath: rclonePath) else {
+            status = .failed
+            lastMessage = "复制完成，但无法开始校验：没有找到 rclone。"
+            writeSummary(status: "copy-completed-check-failed", finishedAt: Date(), summaryURL: summaryURL)
+            saveRecentTask()
+            return
+        }
+
+        status = .verifying
+        lastMessage = "复制完成，正在执行 size-only 校验。"
+        let checkLogURL = URL(fileURLWithPath: task.logDirectory)
+            .appendingPathComponent("\(DateStamp.makeLogStamp())-check.log")
+        appendOutput("\n[Disk Ferry] 开始校验：\(checkLogURL.path)\n")
+
+        do {
+            try runner.startCheck(
+                rclonePath: resolvedRclone,
+                task: task,
+                logFile: checkLogURL.path,
+                onOutput: { [weak self] text in
+                    self?.appendOutput(text)
+                },
+                onFinish: { [weak self] exitCode in
+                    self?.finishVerification(exitCode: exitCode, summaryURL: summaryURL)
+                }
+            )
+        } catch {
+            status = .failed
+            lastMessage = "复制完成，但无法启动校验：\(error.localizedDescription)"
+            writeSummary(status: "copy-completed-check-failed", finishedAt: Date(), summaryURL: summaryURL)
+            saveRecentTask()
+        }
+    }
+
+    private func finishVerification(exitCode: Int32, summaryURL: URL) {
+        let endDate = Date()
+        finishedAt = endDate
+
+        if isStopping {
+            status = .cancelled
+            lastMessage = "校验已中断。复制本身已经完成。"
+            writeSummary(status: "copy-completed-check-cancelled", finishedAt: endDate, summaryURL: summaryURL)
+            saveRecentTask()
+            return
+        }
+
+        if exitCode == 0 {
+            status = .completed
+            progress.markFinished()
+            lastMessage = "复制完成，size-only 校验通过。"
+            writeSummary(status: "completed-verified-size-only", finishedAt: endDate, summaryURL: summaryURL)
+        } else {
+            status = .failed
+            lastMessage = "复制完成，但 size-only 校验发现差异。请查看校验日志。"
+            writeSummary(status: "completed-check-failed", finishedAt: endDate, summaryURL: summaryURL)
+        }
+        saveRecentTask()
     }
 
     private func writeSummary(status: String, finishedAt: Date, summaryURL: URL) {

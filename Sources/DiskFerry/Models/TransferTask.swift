@@ -14,6 +14,7 @@ struct TransferTask: Codable, Identifiable, Equatable {
     var lowLevelRetries: Int
     var excludes: [String]
     var verifyMode: VerifyMode
+    var verifyAfterCopy: Bool
     var createdAt: Date
 
     static let defaultExcludes = [
@@ -40,6 +41,7 @@ struct TransferTask: Codable, Identifiable, Equatable {
             lowLevelRetries: 20,
             excludes: TransferTask.defaultExcludes,
             verifyMode: .sizeOnly,
+            verifyAfterCopy: false,
             createdAt: Date()
         )
     }

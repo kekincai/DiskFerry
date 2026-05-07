@@ -18,6 +18,35 @@ final class RcloneRunner {
         onFinish: @escaping @MainActor (Int32) -> Void
     ) throws {
         let arguments = makeArguments(task: task, logFile: logFile, dryRun: dryRun)
+        try start(
+            rclonePath: rclonePath,
+            arguments: arguments,
+            onOutput: onOutput,
+            onFinish: onFinish
+        )
+    }
+
+    func startCheck(
+        rclonePath: String,
+        task: TransferTask,
+        logFile: String,
+        onOutput: @escaping @MainActor (String) -> Void,
+        onFinish: @escaping @MainActor (Int32) -> Void
+    ) throws {
+        try start(
+            rclonePath: rclonePath,
+            arguments: makeCheckArguments(task: task, logFile: logFile),
+            onOutput: onOutput,
+            onFinish: onFinish
+        )
+    }
+
+    private func start(
+        rclonePath: String,
+        arguments: [String],
+        onOutput: @escaping @MainActor (String) -> Void,
+        onFinish: @escaping @MainActor (Int32) -> Void
+    ) throws {
         let process = Process()
         let stdout = Pipe()
         let stderr = Pipe()
@@ -91,5 +120,17 @@ final class RcloneRunner {
         ])
 
         return arguments
+    }
+
+    func makeCheckArguments(task: TransferTask, logFile: String) -> [String] {
+        [
+            "check",
+            task.sourcePath,
+            task.resolvedTargetPath,
+            "--size-only",
+            "--one-way",
+            "--log-file", logFile,
+            "--log-level", "INFO"
+        ]
     }
 }

@@ -5,6 +5,7 @@ enum TransferStatus: String {
     case prechecking
     case dryRunning
     case running
+    case verifying
     case stopping
     case cancelled
     case completed
@@ -16,6 +17,7 @@ enum TransferStatus: String {
         case .prechecking: "预检查中"
         case .dryRunning: "预演中"
         case .running: "复制中"
+        case .verifying: "校验中"
         case .stopping: "正在停止"
         case .cancelled: "已取消"
         case .completed: "已完成"
@@ -28,6 +30,7 @@ enum TransferStatus: String {
         case .idle: .secondary
         case .prechecking, .dryRunning: .blue
         case .running: .green
+        case .verifying: .blue
         case .stopping: .orange
         case .cancelled: .orange
         case .completed: .green
