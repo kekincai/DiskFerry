@@ -15,7 +15,7 @@ final class RcloneRunner {
         task: TransferTask,
         logFile: String,
         dryRun: Bool,
-        onOutput: @escaping @MainActor (String) -> Void,
+        onOutput: @escaping @Sendable (String) -> Void,
         onFinish: @escaping @MainActor (Int32) -> Void
     ) throws {
         let arguments = makeArguments(task: task, logFile: logFile, dryRun: dryRun)
@@ -31,7 +31,7 @@ final class RcloneRunner {
         rclonePath: String,
         task: TransferTask,
         logFile: String,
-        onOutput: @escaping @MainActor (String) -> Void,
+        onOutput: @escaping @Sendable (String) -> Void,
         onFinish: @escaping @MainActor (Int32) -> Void
     ) throws {
         try start(
@@ -45,7 +45,7 @@ final class RcloneRunner {
     private func start(
         rclonePath: String,
         arguments: [String],
-        onOutput: @escaping @MainActor (String) -> Void,
+        onOutput: @escaping @Sendable (String) -> Void,
         onFinish: @escaping @MainActor (Int32) -> Void
     ) throws {
         let process = Process()
@@ -143,9 +143,9 @@ private final class OutputCoalescer {
     private let maxPendingCharacters = 40_000
     private var pending = ""
     private var flushScheduled = false
-    private let onOutput: @MainActor (String) -> Void
+    private let onOutput: @Sendable (String) -> Void
 
-    init(interval: TimeInterval, onOutput: @escaping @MainActor (String) -> Void) {
+    init(interval: TimeInterval, onOutput: @escaping @Sendable (String) -> Void) {
         self.interval = interval
         self.onOutput = onOutput
     }
@@ -178,8 +178,6 @@ private final class OutputCoalescer {
 
         guard !text.isEmpty else { return }
 
-        Task { @MainActor in
-            onOutput(text)
-        }
+        onOutput(text)
     }
 }

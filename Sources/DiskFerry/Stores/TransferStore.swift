@@ -18,20 +18,16 @@ final class TransferStore: ObservableObject {
     @Published var heatmapItems: [FolderHeatmapItem] = []
     @Published var lastHeatmapRefresh: Date?
 
+    private let sampler = TransferSampler()
     private let runner = RcloneRunner()
     private let prechecker = PrecheckService()
     private let storage = TaskStorage()
     private var isStopping = false
-    private var pendingOutput = ""
-    private var outputFlushTask: Task<Void, Never>?
     private var sourceScanTask: Task<Void, Never>?
     private var targetScanTask: Task<Void, Never>?
     private var logMonitorTask: Task<Void, Never>?
-    private var progressTickerTask: Task<Void, Never>?
-    private var lastTargetScanBytes: Int64?
-    private var lastTargetScanDate: Date?
+    private var snapshotTask: Task<Void, Never>?
     private var lastLogReadOffset: UInt64 = 0
-    private let maxDisplayedLogCharacters = 80_000
 
     init() {
         self.task = .empty
@@ -99,7 +95,7 @@ final class TransferStore: ObservableObject {
         sourceScanTask?.cancel()
         targetScanTask?.cancel()
         logMonitorTask?.cancel()
-        progressTickerTask?.cancel()
+        snapshotTask?.cancel()
         runner.stop()
     }
 
@@ -171,14 +167,10 @@ final class TransferStore: ObservableObject {
         startedAt = startDate
         finishedAt = nil
         isStopping = false
-        pendingOutput = ""
-        outputFlushTask?.cancel()
         sourceScanTask?.cancel()
         targetScanTask?.cancel()
         logMonitorTask?.cancel()
-        progressTickerTask?.cancel()
-        lastTargetScanBytes = nil
-        lastTargetScanDate = nil
+        snapshotTask?.cancel()
         lastLogReadOffset = 0
         outputText = ""
         heatmapItems = []
@@ -186,20 +178,45 @@ final class TransferStore: ObservableObject {
         status = dryRun ? .dryRunning : .running
         lastMessage = dryRun ? "正在预演，不会写入目标目录。" : "正在复制。"
 
-        appendOutput(commandPreview(rclonePath: resolvedRclone, logFile: logURL.path, dryRun: dryRun))
-        startProgressTicker()
+        let liveLogPreviewEnabled = task.liveLogPreviewEnabled
+        let commandText = commandPreview(rclonePath: resolvedRclone, logFile: logURL.path, dryRun: dryRun)
+        Task { [weak self] in
+            guard let self else { return }
+            await self.sampler.reset(liveLogPreviewEnabled: liveLogPreviewEnabled)
+            await self.sampler.ingestOutput(commandText)
+            await MainActor.run { [weak self] in
+                self?.beginTransferProcess(
+                    rclonePath: resolvedRclone,
+                    logFile: logURL.path,
+                    dryRun: dryRun,
+                    summaryURL: summaryURL
+                )
+            }
+        }
+    }
+
+    private func beginTransferProcess(
+        rclonePath: String,
+        logFile: String,
+        dryRun: Bool,
+        summaryURL: URL
+    ) {
+        startSnapshotPump()
         if !dryRun, task.liveHeatmapEnabled {
             startTargetProgressScanner()
         }
 
         do {
+            let sampler = sampler
             try runner.start(
-                rclonePath: resolvedRclone,
+                rclonePath: rclonePath,
                 task: task,
-                logFile: logURL.path,
+                logFile: logFile,
                 dryRun: dryRun,
-                onOutput: { [weak self] text in
-                    self?.appendOutput(text)
+                onOutput: { text in
+                    Task {
+                        await sampler.ingestOutput(text)
+                    }
                 },
                 onFinish: { [weak self] exitCode in
                     self?.finish(exitCode: exitCode, dryRun: dryRun, summaryURL: summaryURL)
@@ -216,11 +233,11 @@ final class TransferStore: ObservableObject {
     private func finish(exitCode: Int32, dryRun: Bool, summaryURL: URL) {
         let endDate = Date()
         finishedAt = endDate
-        flushOutputNow()
         sourceScanTask?.cancel()
         targetScanTask?.cancel()
         logMonitorTask?.cancel()
-        progressTickerTask?.cancel()
+        snapshotTask?.cancel()
+        publishSnapshot()
 
         if isStopping {
             status = .cancelled
@@ -235,7 +252,12 @@ final class TransferStore: ObservableObject {
             } else {
                 status = .completed
                 if !dryRun {
-                    progress.markFinished()
+                    Task {
+                        await sampler.markFinished()
+                        await MainActor.run {
+                            self.publishSnapshot()
+                        }
+                    }
                 }
                 lastMessage = dryRun ? "预演完成。" : "复制完成。"
                 writeSummary(status: dryRun ? "dry-run-completed" : "completed", finishedAt: endDate, summaryURL: summaryURL)
@@ -262,15 +284,20 @@ final class TransferStore: ObservableObject {
         lastMessage = "复制完成，正在执行 size-only 校验。"
         let checkLogURL = URL(fileURLWithPath: task.logDirectory)
             .appendingPathComponent("\(DateStamp.makeLogStamp())-check.log")
-        appendOutput("\n[Disk Ferry] 开始校验：\(checkLogURL.path)\n")
+        let sampler = sampler
+        Task {
+            await sampler.ingestOutput("\n[Disk Ferry] 开始校验：\(checkLogURL.path)\n")
+        }
 
         do {
             try runner.startCheck(
                 rclonePath: resolvedRclone,
                 task: task,
                 logFile: checkLogURL.path,
-                onOutput: { [weak self] text in
-                    self?.appendOutput(text)
+                onOutput: { text in
+                    Task {
+                        await sampler.ingestOutput(text)
+                    }
                 },
                 onFinish: { [weak self] exitCode in
                     self?.finishVerification(exitCode: exitCode, summaryURL: summaryURL)
@@ -298,7 +325,12 @@ final class TransferStore: ObservableObject {
 
         if exitCode == 0 {
             status = .completed
-            progress.markFinished()
+            Task {
+                await sampler.markFinished()
+                await MainActor.run {
+                    self.publishSnapshot()
+                }
+            }
             lastMessage = "复制完成，size-only 校验通过。"
             writeSummary(status: "completed-verified-size-only", finishedAt: endDate, summaryURL: summaryURL)
         } else {
@@ -328,7 +360,9 @@ final class TransferStore: ObservableObject {
             try data.write(to: summaryURL, options: .atomic)
             currentSummaryFile = summaryURL.path
         } catch {
-            appendOutput("\n[Disk Ferry] 无法写入 summary.json：\(error.localizedDescription)\n")
+            Task {
+                await sampler.ingestOutput("\n[Disk Ferry] 无法写入 summary.json：\(error.localizedDescription)\n")
+            }
         }
     }
 
@@ -339,38 +373,6 @@ final class TransferStore: ObservableObject {
         recentTasks.insert(task, at: 0)
         recentTasks = Array(recentTasks.prefix(20))
         storage.saveRecentTasks(recentTasks)
-    }
-
-    private func appendOutput(_ text: String) {
-        RcloneStatsParser.apply(text, to: &progress)
-        guard task.liveLogPreviewEnabled else { return }
-
-        pendingOutput.append(text)
-
-        if pendingOutput.count > maxDisplayedLogCharacters {
-            pendingOutput.removeFirst(pendingOutput.count - maxDisplayedLogCharacters)
-        }
-
-        guard outputFlushTask == nil else { return }
-        outputFlushTask = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(700))
-            await MainActor.run {
-                self?.flushOutputNow()
-            }
-        }
-    }
-
-    private func flushOutputNow() {
-        outputFlushTask?.cancel()
-        outputFlushTask = nil
-
-        guard !pendingOutput.isEmpty else { return }
-        outputText.append(pendingOutput)
-        pendingOutput = ""
-
-        if outputText.count > maxDisplayedLogCharacters {
-            outputText.removeFirst(outputText.count - maxDisplayedLogCharacters)
-        }
     }
 
     private func scanSourceSummary() {
@@ -400,15 +402,10 @@ final class TransferStore: ObservableObject {
                 await MainActor.run { [weak self] in
                     guard let self, !Task.isCancelled else { return }
                     let now = Date()
-                    self.progress.applyTargetSummary(
-                        result.summary,
-                        previousBytes: self.lastTargetScanBytes,
-                        previousDate: self.lastTargetScanDate,
-                        date: now
-                    )
                     self.heatmapItems = result.heatmap
-                    self.lastTargetScanBytes = result.summary.totalBytes
-                    self.lastTargetScanDate = now
+                    Task {
+                        await self.sampler.applyTargetSummary(result.summary, date: now)
+                    }
                 }
 
                 try? await Task.sleep(for: .seconds(10))
@@ -416,15 +413,39 @@ final class TransferStore: ObservableObject {
         }
     }
 
-    private func startProgressTicker() {
-        progressTickerTask = Task { [weak self] in
+    private func startSnapshotPump() {
+        snapshotTask = Task { [weak self] in
             while !Task.isCancelled {
+                guard let self else { return }
+                let startedAt = await MainActor.run {
+                    self.startedAt
+                }
+                let snapshot = await self.sampler.snapshot(startedAt: startedAt)
                 await MainActor.run { [weak self] in
                     guard let self, !Task.isCancelled else { return }
-                    self.progress.updateElapsedEstimate(startedAt: self.startedAt, now: Date())
+                    self.applySnapshot(snapshot)
                 }
                 try? await Task.sleep(for: .seconds(2))
             }
+        }
+    }
+
+    private func publishSnapshot() {
+        Task { [weak self] in
+            guard let self else { return }
+            let snapshot = await self.sampler.snapshot(startedAt: self.startedAt)
+            await MainActor.run { [weak self] in
+                self?.applySnapshot(snapshot)
+            }
+        }
+    }
+
+    private func applySnapshot(_ snapshot: TransferSnapshot) {
+        if progress != snapshot.progress {
+            progress = snapshot.progress
+        }
+        if outputText != snapshot.logText {
+            outputText = snapshot.logText
         }
     }
 
@@ -443,7 +464,9 @@ final class TransferStore: ObservableObject {
                         guard let self, !Task.isCancelled else { return }
                         self.lastLogReadOffset = chunk.nextOffset
                         if !chunk.text.isEmpty {
-                            RcloneStatsParser.apply(chunk.text, to: &self.progress)
+                            Task {
+                                await self.sampler.ingestOutput(chunk.text)
+                            }
                         }
                     }
                 }
