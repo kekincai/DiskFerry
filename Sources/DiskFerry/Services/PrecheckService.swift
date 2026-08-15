@@ -2,7 +2,6 @@ import Foundation
 
 struct PrecheckService {
     func run(task: TransferTask, rclonePath: String?) -> PrecheckResult {
-        let fileManager = FileManager.default
         var items: [PrecheckItem] = []
 
         if let resolvedRclone = RcloneLocator.locate(preferredPath: rclonePath) {
@@ -28,22 +27,35 @@ struct PrecheckService {
             path: task.targetPath,
             mustBeReadable: false,
             mustBeWritable: true,
+            performWriteProbe: false,
             missingMessage: "目标目录不存在，可能是 SMB 连接已经断开。"
         ))
 
         let resolvedTargetPath = task.resolvedTargetPath
-        if !resolvedTargetPath.isEmpty, resolvedTargetPath != task.targetPath {
+        var safeLogDirectory: String?
+        if !task.targetPath.isEmpty {
             do {
-                try fileManager.createDirectory(atPath: resolvedTargetPath, withIntermediateDirectories: true)
+                let destination = try DestinationPathPolicy.prepare(task: task)
+                safeLogDirectory = destination.logDirectory.path
+                try DestinationPathPolicy.validate(destination)
+                items.append(contentsOf: writeProbe(path: destination.selectedRoot.path))
+                try DestinationPathPolicy.validate(destination)
+                if resolvedTargetPath != task.targetPath {
+                    items.append(.init(
+                        title: "实际写入位置",
+                        message: "将复制到：\(resolvedTargetPath)",
+                        severity: .ok
+                    ))
+                }
                 items.append(.init(
-                    title: "实际写入位置",
-                    message: "将复制到：\(resolvedTargetPath)",
+                    title: "目标路径安全检查",
+                    message: "目标和日志目录位于所选目录内，且不包含符号链接。",
                     severity: .ok
                 ))
             } catch {
                 items.append(.init(
-                    title: "实际写入位置",
-                    message: "无法创建目标子文件夹：\(error.localizedDescription)",
+                    title: "目标路径安全检查",
+                    message: error.localizedDescription,
                     severity: .error
                 ))
             }
@@ -63,17 +75,8 @@ struct PrecheckService {
             ))
         }
 
-        let logDirectory = task.logDirectory.isEmpty
-            ? URL(fileURLWithPath: resolvedTargetPath).appendingPathComponent("_transfer_logs").path
-            : task.logDirectory
-
-        if !task.targetPath.isEmpty {
-            do {
-                try fileManager.createDirectory(atPath: logDirectory, withIntermediateDirectories: true)
-                items.append(.init(title: "日志目录", message: "可创建或已存在：\(logDirectory)", severity: .ok))
-            } catch {
-                items.append(.init(title: "日志目录", message: "无法创建日志目录：\(error.localizedDescription)", severity: .error))
-            }
+        if let safeLogDirectory {
+            items.append(.init(title: "日志目录", message: "可创建或已存在：\(safeLogDirectory)", severity: .ok))
         }
 
         return PrecheckResult(items: items)
@@ -84,6 +87,7 @@ struct PrecheckService {
         path: String,
         mustBeReadable: Bool,
         mustBeWritable: Bool,
+        performWriteProbe: Bool = true,
         missingMessage: String
     ) -> [PrecheckItem] {
         let fileManager = FileManager.default
@@ -105,7 +109,7 @@ struct PrecheckService {
         if mustBeWritable {
             if !fileManager.isWritableFile(atPath: path) {
                 items.append(.init(title: title, message: "目录不可写。请检查 SMB 权限或 Windows 共享设置。", severity: .error))
-            } else {
+            } else if performWriteProbe {
                 items.append(contentsOf: writeProbe(path: path))
             }
         }

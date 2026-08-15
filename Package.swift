@@ -14,6 +14,11 @@ let package = Package(
         .executableTarget(
             name: "DiskFerry",
             path: "Sources/DiskFerry"
+        ),
+        .testTarget(
+            name: "DiskFerryTests",
+            dependencies: ["DiskFerry"],
+            path: "Tests/DiskFerryTests"
         )
     ]
 )

@@ -27,6 +27,8 @@ final class TransferStore: ObservableObject {
     private var targetScanTask: Task<Void, Never>?
     private var logMonitorTask: Task<Void, Never>?
     private var snapshotTask: Task<Void, Never>?
+    private var heatmapRefreshTask: Task<Void, Never>?
+    private var activeDestinationSnapshot: DestinationPathPolicy.Snapshot?
     private var lastLogReadOffset: UInt64 = 0
 
     init() {
@@ -96,6 +98,7 @@ final class TransferStore: ObservableObject {
         targetScanTask?.cancel()
         logMonitorTask?.cancel()
         snapshotTask?.cancel()
+        heatmapRefreshTask?.cancel()
         runner.stop()
     }
 
@@ -118,9 +121,11 @@ final class TransferStore: ObservableObject {
         let sourcePath = task.sourcePath
         let targetPath = task.resolvedTargetPath
         let excludes = task.excludes
-        Task.detached(priority: .utility) {
+        heatmapRefreshTask?.cancel()
+        heatmapRefreshTask = Task.detached(priority: .utility) { [weak self] in
             let heatmap = HeatmapScanner.scan(sourcePath: sourcePath, targetPath: targetPath, excludes: excludes, limit: 120)
             await MainActor.run { [weak self] in
+                guard !Task.isCancelled else { return }
                 self?.heatmapItems = heatmap
                 self?.lastHeatmapRefresh = Date()
             }
@@ -129,6 +134,7 @@ final class TransferStore: ObservableObject {
 
     private func start(dryRun: Bool) {
         guard canStart else { return }
+        activeDestinationSnapshot = nil
 
         let result = prechecker.run(task: task, rclonePath: rclonePath)
         precheckItems = result.items
@@ -147,20 +153,22 @@ final class TransferStore: ObservableObject {
 
         task.refreshLogDirectory()
 
+        let destinationSnapshot: DestinationPathPolicy.Snapshot
+        do {
+            destinationSnapshot = try DestinationPathPolicy.prepare(task: task)
+            try DestinationPathPolicy.validate(destinationSnapshot)
+        } catch {
+            status = .failed
+            lastMessage = "目标路径安全检查失败：\(error.localizedDescription)"
+            return
+        }
+
         let startDate = Date()
         let stamp = DateStamp.makeLogStamp(date: startDate)
         let logURL = URL(fileURLWithPath: task.logDirectory)
             .appendingPathComponent("\(stamp)\(dryRun ? "-dry-run" : "").log")
         let summaryURL = URL(fileURLWithPath: task.logDirectory)
             .appendingPathComponent("\(stamp)\(dryRun ? "-dry-run" : "").summary.json")
-
-        do {
-            try FileManager.default.createDirectory(atPath: task.logDirectory, withIntermediateDirectories: true)
-        } catch {
-            status = .failed
-            lastMessage = "无法创建日志目录：\(error.localizedDescription)"
-            return
-        }
 
         currentLogFile = logURL.path
         currentSummaryFile = summaryURL.path
@@ -171,11 +179,13 @@ final class TransferStore: ObservableObject {
         targetScanTask?.cancel()
         logMonitorTask?.cancel()
         snapshotTask?.cancel()
+        heatmapRefreshTask?.cancel()
         lastLogReadOffset = 0
         outputText = ""
         heatmapItems = []
         progress = .empty
         status = dryRun ? .dryRunning : .running
+        activeDestinationSnapshot = destinationSnapshot
         lastMessage = dryRun ? "正在预演，不会写入目标目录。" : "正在复制。"
 
         let liveLogPreviewEnabled = task.liveLogPreviewEnabled
@@ -189,7 +199,8 @@ final class TransferStore: ObservableObject {
                     rclonePath: resolvedRclone,
                     logFile: logURL.path,
                     dryRun: dryRun,
-                    summaryURL: summaryURL
+                    summaryURL: summaryURL,
+                    destinationSnapshot: destinationSnapshot
                 )
             }
         }
@@ -199,14 +210,15 @@ final class TransferStore: ObservableObject {
         rclonePath: String,
         logFile: String,
         dryRun: Bool,
-        summaryURL: URL
+        summaryURL: URL,
+        destinationSnapshot: DestinationPathPolicy.Snapshot
     ) {
-        startSnapshotPump()
-        if !dryRun, task.liveHeatmapEnabled {
-            startTargetProgressScanner()
-        }
-
         do {
+            try DestinationPathPolicy.validate(destinationSnapshot)
+            startSnapshotPump()
+            if !dryRun, task.liveHeatmapEnabled {
+                startTargetProgressScanner()
+            }
             let sampler = sampler
             try runner.start(
                 rclonePath: rclonePath,
@@ -272,6 +284,17 @@ final class TransferStore: ObservableObject {
     }
 
     private func startVerification(summaryURL: URL) {
+        do {
+            guard let activeDestinationSnapshot else {
+                throw DestinationPathPolicy.PolicyError.emptyPath
+            }
+            try DestinationPathPolicy.validate(activeDestinationSnapshot)
+        } catch {
+            status = .failed
+            lastMessage = "复制完成，但目标路径安全检查失败：\(error.localizedDescription)"
+            return
+        }
+
         guard let resolvedRclone = RcloneLocator.locate(preferredPath: rclonePath) else {
             status = .failed
             lastMessage = "复制完成，但无法开始校验：没有找到 rclone。"
@@ -342,6 +365,18 @@ final class TransferStore: ObservableObject {
     }
 
     private func writeSummary(status: String, finishedAt: Date, summaryURL: URL) {
+        do {
+            guard let activeDestinationSnapshot else {
+                throw DestinationPathPolicy.PolicyError.emptyPath
+            }
+            try DestinationPathPolicy.validate(activeDestinationSnapshot)
+        } catch {
+            Task {
+                await sampler.ingestOutput("\n[Disk Ferry] 已阻止 summary.json 写入：\(error.localizedDescription)\n")
+            }
+            return
+        }
+
         let summary = TransferSummary(
             taskName: task.name,
             source: task.sourcePath,
@@ -393,11 +428,16 @@ final class TransferStore: ObservableObject {
         let excludes = task.excludes
         targetScanTask = Task { [weak self] in
             while !Task.isCancelled {
-                let result = await Task.detached(priority: .utility) {
+                let scanTask = Task.detached(priority: .utility) {
                     let heatmap = HeatmapScanner.scan(sourcePath: sourcePath, targetPath: targetPath, excludes: excludes)
                     let summary = HeatmapScanner.aggregateTargetSummary(from: heatmap)
                     return (summary: summary, heatmap: heatmap)
-                }.value
+                }
+                let result = await withTaskCancellationHandler {
+                    await scanTask.value
+                } onCancel: {
+                    scanTask.cancel()
+                }
 
                 await MainActor.run { [weak self] in
                     guard let self, !Task.isCancelled else { return }
