@@ -1,6 +1,12 @@
 import Foundation
 
 enum HeatmapScanner {
+    private static let rootTimeBudget: TimeInterval = 2
+    private static let childTimeBudget: TimeInterval = 1
+    private static let scanTimeBudget: TimeInterval = 3
+    private static let rootPathByteBudget = 2 * 1_024 * 1_024
+    private static let childPathByteBudget = 1 * 1_024 * 1_024
+
     static func aggregateTargetSummary(from items: [FolderHeatmapItem]) -> SourceSummary {
         SourceSummary(
             fileCount: items.reduce(0) { $0 + $1.targetFiles },
@@ -10,18 +16,17 @@ enum HeatmapScanner {
     }
 
     static func scan(sourcePath: String, targetPath: String, excludes: [String], limit: Int = 240) -> [FolderHeatmapItem] {
-        let fileManager = FileManager.default
         let sourceURL = URL(fileURLWithPath: sourcePath, isDirectory: true)
         let targetURL = URL(fileURLWithPath: targetPath, isDirectory: true)
         let excludedNames = Set(excludes.compactMap(simpleExcludedName)).union(["_transfer_logs"])
+        let deadline = makeDeadline(after: scanTimeBudget)
 
-        guard let children = try? fileManager.contentsOfDirectory(
+        let children = boundedChildren(
             at: sourceURL,
-            includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey, .totalFileAllocatedSizeKey, .fileSizeKey],
-            options: [.skipsHiddenFiles]
-        ) else {
-            return []
-        }
+            entryBudget: max(0, limit),
+            timeBudget: rootTimeBudget,
+            pathByteBudget: rootPathByteBudget
+        )
 
         return children
             .filter { child in
@@ -29,12 +34,12 @@ enum HeatmapScanner {
                 return !excludedNames.contains(name) && !name.hasPrefix("._")
             }
             .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
-            .prefix(limit)
-            .map { sourceChild in
+            .compactMap { sourceChild in
+                guard !Task.isCancelled, DispatchTime.now().uptimeNanoseconds < deadline else { return nil }
                 let name = sourceChild.lastPathComponent
                 let targetChild = targetURL.appendingPathComponent(name)
-                let sourceSummary = summarizeFast(url: sourceChild, excludes: excludes)
-                let targetSummary = summarizeFast(url: targetChild, excludes: excludes)
+                let sourceSummary = summarizeFast(url: sourceChild, excludes: excludes, deadline: deadline)
+                let targetSummary = summarizeFast(url: targetChild, excludes: excludes, deadline: deadline)
                 let kind: HeatmapItemKind = isDirectory(sourceChild) ? .folder : .file
                 return FolderHeatmapItem(
                     name: name,
@@ -50,14 +55,17 @@ enum HeatmapScanner {
             }
     }
 
-    private static func summarizeFast(url: URL, excludes: [String]) -> SourceSummary {
+    private static func summarizeFast(url: URL, excludes: [String], deadline: UInt64) -> SourceSummary {
+        guard !Task.isCancelled, DispatchTime.now().uptimeNanoseconds < deadline else {
+            return SourceSummary(fileCount: 0, folderCount: 0, totalBytes: 0)
+        }
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
             return SourceSummary(fileCount: 0, folderCount: 0, totalBytes: 0)
         }
 
         if isDirectory.boolValue {
-            return shallowDirectorySummary(url: url, excludes: excludes)
+            return shallowDirectorySummary(url: url, excludes: excludes, deadline: deadline)
         }
 
         let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .totalFileAllocatedSizeKey, .fileSizeKey])
@@ -68,21 +76,24 @@ enum HeatmapScanner {
         return SourceSummary(fileCount: 1, folderCount: 0, totalBytes: Int64(size))
     }
 
-    private static func shallowDirectorySummary(url: URL, excludes: [String]) -> SourceSummary {
+    private static func shallowDirectorySummary(url: URL, excludes: [String], deadline: UInt64) -> SourceSummary {
         let excludedNames = Set(excludes.compactMap(simpleExcludedName)).union(["_transfer_logs"])
-        guard let children = try? FileManager.default.contentsOfDirectory(
+        let now = DispatchTime.now().uptimeNanoseconds
+        let remainingNanoseconds = deadline > now ? deadline - now : 0
+        let remainingSeconds = Double(remainingNanoseconds) / 1_000_000_000
+        let children = boundedChildren(
             at: url,
-            includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey, .totalFileAllocatedSizeKey, .fileSizeKey],
-            options: [.skipsHiddenFiles]
-        ) else {
-            return SourceSummary(fileCount: 0, folderCount: 1, totalBytes: 0)
-        }
+            entryBudget: 500,
+            timeBudget: min(childTimeBudget, remainingSeconds),
+            pathByteBudget: childPathByteBudget
+        )
 
         var fileCount = 0
         var folderCount = 1
         var totalBytes: Int64 = 0
 
-        for child in children.prefix(500) {
+        for child in children {
+            guard !Task.isCancelled else { break }
             let name = child.lastPathComponent
             guard !excludedNames.contains(name), !name.hasPrefix("._") else { continue }
             let values = try? child.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey, .totalFileAllocatedSizeKey, .fileSizeKey])
@@ -95,6 +106,44 @@ enum HeatmapScanner {
         }
 
         return SourceSummary(fileCount: max(fileCount, children.isEmpty ? 0 : 1), folderCount: folderCount, totalBytes: max(totalBytes, children.isEmpty ? 0 : 1))
+    }
+
+    private static func makeDeadline(after seconds: TimeInterval) -> UInt64 {
+        DispatchTime.now().uptimeNanoseconds + UInt64(seconds * 1_000_000_000)
+    }
+
+    static func boundedChildren(
+        at url: URL,
+        entryBudget: Int,
+        timeBudget: TimeInterval = 1,
+        pathByteBudget: Int = 1 * 1_024 * 1_024
+    ) -> [URL] {
+        guard entryBudget > 0, timeBudget > 0, pathByteBudget > 0 else { return [] }
+        guard let enumerator = FileManager.default.enumerator(
+            at: url,
+            includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey, .totalFileAllocatedSizeKey, .fileSizeKey],
+            options: [.skipsHiddenFiles, .skipsSubdirectoryDescendants],
+            errorHandler: { _, _ in false }
+        ) else {
+            return []
+        }
+
+        let deadline = DispatchTime.now().uptimeNanoseconds + UInt64(timeBudget * 1_000_000_000)
+        var children: [URL] = []
+        children.reserveCapacity(min(entryBudget, 512))
+        var pathBytes = 0
+
+        while children.count < entryBudget,
+              !Task.isCancelled,
+              DispatchTime.now().uptimeNanoseconds < deadline,
+              let child = enumerator.nextObject() as? URL {
+            let childPathBytes = child.path.utf8.count
+            guard pathBytes + childPathBytes <= pathByteBudget else { break }
+            children.append(child)
+            pathBytes += childPathBytes
+        }
+
+        return children
     }
 
     private static func isDirectory(_ url: URL) -> Bool {
