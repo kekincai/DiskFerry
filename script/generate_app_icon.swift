@@ -1,6 +1,8 @@
 import AppKit
 import Foundation
 
+// Minimal icon: a blue macOS rounded square, one white arrow ferrying across one wave.
+
 let root = URL(fileURLWithPath: CommandLine.arguments.dropFirst().first ?? FileManager.default.currentDirectoryPath)
 let iconset = root.appendingPathComponent("dist/DiskFerry.iconset", isDirectory: true)
 let output = root.appendingPathComponent("dist/DiskFerry.icns")
@@ -21,78 +23,90 @@ let sizes: [(String, CGFloat)] = [
     ("icon_512x512@2x.png", 1024)
 ]
 
-for (name, size) in sizes {
-    let image = NSImage(size: NSSize(width: size, height: size))
-    image.lockFocus()
+func drawIcon(size: CGFloat) -> NSBitmapImageRep {
+    let rep = NSBitmapImageRep(
+        bitmapDataPlanes: nil,
+        pixelsWide: Int(size),
+        pixelsHigh: Int(size),
+        bitsPerSample: 8,
+        samplesPerPixel: 4,
+        hasAlpha: true,
+        isPlanar: false,
+        colorSpaceName: .deviceRGB,
+        bytesPerRow: 0,
+        bitsPerPixel: 0
+    )!
+    NSGraphicsContext.saveGraphicsState()
+    NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+    defer { NSGraphicsContext.restoreGraphicsState() }
 
-    let rect = NSRect(x: 0, y: 0, width: size, height: size)
-    NSColor(calibratedRed: 0.08, green: 0.11, blue: 0.14, alpha: 1).setFill()
-    NSBezierPath(roundedRect: rect.insetBy(dx: size * 0.06, dy: size * 0.06), xRadius: size * 0.22, yRadius: size * 0.22).fill()
+    let unit = size / 1024
+    // Apple's macOS grid: 824pt body centred in 1024, corner radius ≈ 185.
+    let body = NSRect(x: 100 * unit, y: 100 * unit, width: 824 * unit, height: 824 * unit)
+    let shape = NSBezierPath(roundedRect: body, xRadius: 185 * unit, yRadius: 185 * unit)
 
-    let bg = NSGradient(colors: [
-        NSColor(calibratedRed: 0.10, green: 0.48, blue: 0.70, alpha: 1),
-        NSColor(calibratedRed: 0.05, green: 0.22, blue: 0.32, alpha: 1)
-    ])
-    bg?.draw(in: NSBezierPath(roundedRect: rect.insetBy(dx: size * 0.09, dy: size * 0.09), xRadius: size * 0.18, yRadius: size * 0.18), angle: 90)
-
-    let hullTop = size * 0.55
-    let hullBottom = size * 0.70
-
-    let cabin = NSBezierPath()
-    cabin.move(to: NSPoint(x: size * 0.34, y: size * 0.72))
-    cabin.line(to: NSPoint(x: size * 0.66, y: size * 0.72))
-    cabin.line(to: NSPoint(x: size * 0.73, y: size - hullTop))
-    cabin.line(to: NSPoint(x: size * 0.27, y: size - hullTop))
-    cabin.close()
-    NSColor(calibratedRed: 0.94, green: 0.97, blue: 0.96, alpha: 1).setFill()
-    cabin.fill()
-
-    for index in 0..<3 {
-        let x = size * (0.39 + CGFloat(index) * 0.11)
-        let window = NSRect(x: x, y: size * 0.53, width: size * 0.055, height: size * 0.075)
-        NSColor(calibratedRed: 0.09, green: 0.42, blue: 0.58, alpha: 1).setFill()
-        NSBezierPath(roundedRect: window, xRadius: size * 0.01, yRadius: size * 0.01).fill()
+    if size >= 64 {
+        NSGraphicsContext.saveGraphicsState()
+        let shadow = NSShadow()
+        shadow.shadowColor = NSColor.black.withAlphaComponent(0.28)
+        shadow.shadowBlurRadius = 18 * unit
+        shadow.shadowOffset = NSSize(width: 0, height: -8 * unit)
+        shadow.set()
+        NSColor.black.setFill()
+        shape.fill()
+        NSGraphicsContext.restoreGraphicsState()
     }
 
-    let hull = NSBezierPath()
-    hull.move(to: NSPoint(x: size * 0.16, y: size - hullTop))
-    hull.line(to: NSPoint(x: size * 0.84, y: size - hullTop))
-    hull.line(to: NSPoint(x: size * 0.71, y: size - hullBottom))
-    hull.line(to: NSPoint(x: size * 0.29, y: size - hullBottom))
-    hull.close()
-    NSColor(calibratedRed: 0.95, green: 0.38, blue: 0.18, alpha: 1).setFill()
-    hull.fill()
+    NSGradient(colors: [
+        NSColor(srgbRed: 0.24, green: 0.56, blue: 1.00, alpha: 1),
+        NSColor(srgbRed: 0.10, green: 0.30, blue: 0.82, alpha: 1)
+    ])?.draw(in: shape, angle: -90)
 
-    NSColor(calibratedRed: 0.78, green: 0.17, blue: 0.11, alpha: 1).setStroke()
-    hull.lineWidth = max(1, size * 0.012)
-    hull.stroke()
+    // Small sizes get thicker strokes so the glyph stays legible.
+    let weight: CGFloat = size <= 32 ? 1.35 : 1
+    NSColor.white.setStroke()
 
-    for offset in [0.0, 0.10] {
-        let y = size * (0.19 + CGFloat(offset))
+    // Arrow: shaft plus open chevron head, rounded ends.
+    let arrowY = 560 * unit
+    let arrow = NSBezierPath()
+    arrow.move(to: NSPoint(x: 290 * unit, y: arrowY))
+    arrow.line(to: NSPoint(x: 720 * unit, y: arrowY))
+    arrow.move(to: NSPoint(x: 580 * unit, y: arrowY + 140 * unit))
+    arrow.line(to: NSPoint(x: 724 * unit, y: arrowY))
+    arrow.line(to: NSPoint(x: 580 * unit, y: arrowY - 140 * unit))
+    arrow.lineWidth = 84 * unit * weight
+    arrow.lineCapStyle = .round
+    arrow.lineJoinStyle = .round
+    arrow.stroke()
+
+    // One gentle wave underneath.
+    if size >= 32 {
+        let waveY = 330 * unit
+        let amplitude = 34 * unit
         let wave = NSBezierPath()
-        wave.move(to: NSPoint(x: size * 0.18, y: y))
-        wave.curve(
-            to: NSPoint(x: size * 0.46, y: y),
-            controlPoint1: NSPoint(x: size * 0.27, y: y + size * 0.055),
-            controlPoint2: NSPoint(x: size * 0.37, y: y - size * 0.055)
-        )
-        wave.curve(
-            to: NSPoint(x: size * 0.74, y: y),
-            controlPoint1: NSPoint(x: size * 0.55, y: y + size * 0.055),
-            controlPoint2: NSPoint(x: size * 0.65, y: y - size * 0.055)
-        )
-        NSColor(calibratedRed: 0.70, green: 0.93, blue: 1.00, alpha: 1).setStroke()
-        wave.lineWidth = max(1.5, size * 0.026)
+        wave.move(to: NSPoint(x: 290 * unit, y: waveY))
+        let segments = 3
+        let span = (734 - 290) * unit / CGFloat(segments)
+        for index in 0..<segments {
+            let startX = 290 * unit + CGFloat(index) * span
+            wave.curve(
+                to: NSPoint(x: startX + span, y: waveY),
+                controlPoint1: NSPoint(x: startX + span * 0.35, y: waveY + amplitude * (index.isMultiple(of: 2) ? 1 : -1)),
+                controlPoint2: NSPoint(x: startX + span * 0.65, y: waveY + amplitude * (index.isMultiple(of: 2) ? 1 : -1))
+            )
+        }
+        wave.lineWidth = 44 * unit * weight
+        wave.lineCapStyle = .round
+        NSColor.white.withAlphaComponent(0.55).setStroke()
         wave.stroke()
     }
 
-    image.unlockFocus()
+    return rep
+}
 
-    guard let tiff = image.tiffRepresentation,
-          let bitmap = NSBitmapImageRep(data: tiff),
-          let data = bitmap.representation(using: .png, properties: [:]) else {
-        throw NSError(domain: "DiskFerryIcon", code: 1)
-    }
+for (name, size) in sizes {
+    let rep = drawIcon(size: size)
+    let data = rep.representation(using: .png, properties: [:])!
     try data.write(to: iconset.appendingPathComponent(name))
 }
 
@@ -101,6 +115,6 @@ process.executableURL = URL(fileURLWithPath: "/usr/bin/iconutil")
 process.arguments = ["-c", "icns", iconset.path, "-o", output.path]
 try process.run()
 process.waitUntilExit()
-if process.terminationStatus != 0 {
-    throw NSError(domain: "DiskFerryIcon", code: Int(process.terminationStatus))
+guard process.terminationStatus == 0 else {
+    fatalError("iconutil failed")
 }
