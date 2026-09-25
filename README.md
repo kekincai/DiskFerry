@@ -8,23 +8,14 @@ It is built for the boring but important job: move large photo, video, and backu
 
 ## What It Does
 
-- Select a source folder and a destination folder with native macOS folder pickers.
-- Run `rclone copy` with conservative defaults.
-- Write full logs to the destination under `_transfer_logs`.
-- Show live transfer output without keeping large local logs.
-- Avoid thumbnails, previews, EXIF parsing, media databases, and file-content caches.
-- Resume interrupted transfers by running the same task again.
-- Optionally run a `size-only` check after copying.
-
-## Why This Exists
-
-Finder is convenient, but it is not ideal for multi-terabyte transfers across external disks and SMB mounts. Disk Ferry intentionally stays simple:
-
-```text
-source drive -> rclone -> SMB / external destination
-```
-
-No temporary staging on the Mac. No photo library import. No preview generation.
+- **Routes, not forms.** Every source → destination pair you copy is saved in the sidebar with its last result. Pin the ones you use weekly and re-sync with one click.
+- **Set locations the way you already have them.** Drag a folder from Finder, paste a folder you copied with ⌘C, or paste an address: `/Volumes/...`, `smb://server/share/folder`, `\\server\share\folder`. Shares that are not mounted yet are connected automatically with the standard macOS login sheet.
+- **See where files will land.** Choose "put into a `<source>` folder" (like dragging in Finder) or "merge into the destination"; the exact write path is always shown.
+- **Accurate, cheap live progress.** Percent, bytes, files, current and average speed, ETA, skipped files and the files currently in flight come straight from rclone's own stats, refreshed once per second without redrawing the rest of the window.
+- **Resume by running again.** Files already on the destination are skipped.
+- **Nothing extra on disk.** No log files, no summaries, no thumbnails, previews or caches. If a run fails, rclone's errors are shown in the window.
+- Optional `size-only` verification after copying.
+- Keeps the Mac awake while copying, shows progress in the Dock, and notifies you when a long copy finishes.
 
 ## Requirements
 
@@ -56,47 +47,46 @@ You can also verify launch:
 ./script/build_and_run.sh --verify
 ```
 
-## Default Copy Command
+## Copy Command
 
-Disk Ferry generates an `rclone copy` command with defaults tuned for external disks and SMB:
+The "Advanced" popover shows the exact command for the current route. With default settings it is:
 
 ```bash
 rclone copy "$SOURCE" "$TARGET" \
-  --stats 1s \
-  --stats-log-level NOTICE \
+  --check-first \
+  --local-no-clone \
   --transfers 1 \
   --checkers 2 \
   --retries 10 \
   --low-level-retries 20 \
-  --exclude ".DS_Store" \
-  --exclude "._*" \
-  --exclude ".Spotlight-V100/**" \
-  --exclude ".Trashes/**" \
-  --exclude ".fseventsd/**" \
-  --exclude ".TemporaryItems/**" \
-  --log-file "$TARGET/_transfer_logs/YYYYMMDD-HHMMSS.log" \
-  --log-level INFO
+  --exclude ".DS_Store" --exclude "._*" \
+  --exclude ".Spotlight-V100/**" --exclude ".Trashes/**" \
+  --exclude ".fseventsd/**" --exclude ".TemporaryItems/**" \
+  --stats 0 --log-level NOTICE \
+  --rc --rc-addr 127.0.0.1:<random port> --rc-user diskferry --rc-pass <random>
 ```
 
-When the destination is a mounted volume root, such as `/Volumes/minipc`, Disk Ferry copies into a child folder named after the source folder. For example:
+- `--check-first` compares everything before the first byte moves, so totals and ETA are exact from the start. It can be turned off ("先统计再复制").
+- `--local-no-clone` (added when the installed rclone supports it) makes rclone stream the data itself instead of handing each file to the OS, so progress is counted per byte rather than per finished file.
+- The rc server listens on loopback only with a random password; Disk Ferry polls `core/stats` once per second for live progress.
 
-```text
-source:      /Volumes/PhotoDisk/Photos
-destination: /Volumes/minipc
-actual path: /Volumes/minipc/Photos
-```
-
-This avoids scattering thousands of files directly into the drive root.
+`$TARGET` is either the selected destination or `<destination>/<source folder name>`, depending on the chosen layout. Routes saved by earlier versions keep their previous behavior.
 
 ## Verification
 
 Post-copy verification is optional and off by default. When enabled, Disk Ferry runs:
 
 ```bash
-rclone check "$SOURCE" "$TARGET" --size-only --one-way
+rclone check "$SOURCE" "$TARGET" --size-only --one-way  # plus the same excludes
 ```
 
 This is intentionally not a full hash check. Full hash verification can be slow and may read a large amount of data from both drives.
+
+## Scripting
+
+```bash
+open -a DiskFerry --args -source /Volumes/PhotoDisk/Photos -target /Volumes/nas -autostart YES
+```
 
 ## Privacy And Cache Policy
 
@@ -109,8 +99,9 @@ Disk Ferry does not:
 - Hash every file by default
 - Cache file contents
 - Stage data in a local temporary directory
+- Write log or summary files
 
-Local app state is limited to small settings and recent task metadata. Transfer logs are written to the destination by default.
+Local app state is limited to small settings and saved routes (`~/Library/Application Support/DiskFerry/recent_tasks.json`). rclone output is held in memory and shown only when a run fails.
 
 ## Project Layout
 
@@ -127,9 +118,7 @@ Assets/                     Project icon assets
 
 ## Roadmap
 
-- Better progress parsing for more `rclone` output variants
-- Optional report generation for failed or missing files
-- Saved task templates
+- Queue several routes to run one after another
 - More explicit SMB disconnect warnings
 - Optional full verification with clear warnings
 
