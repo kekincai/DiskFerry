@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.2.0 - 2026-09-25
+
 ### Changed
 - Rebuilt the interface for daily use: saved routes in the sidebar (pin, rename, last result), source/destination cards with drag-and-drop, paste, typed paths and one-click mounted volumes, an explicit destination layout with a preview of the real write path, and a single run panel.
 - Live progress now comes from rclone's rc `core/stats` (polled once per second) instead of parsing console output, which never arrived because rclone wrote it to the log file. Totals are exact up front with `--check-first`, and `--local-no-clone` keeps progress per byte.
