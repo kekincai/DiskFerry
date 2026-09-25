@@ -40,7 +40,8 @@ final class RcloneRunner {
         )
     }
 
-    private func start(
+    /// Runs any executable with the same output capture; `internal` for tests.
+    func start(
         rclonePath: String,
         arguments: [String],
         onFinish: @escaping @MainActor (Int32, String) -> Void
@@ -64,7 +65,14 @@ final class RcloneRunner {
         }
 
         process.terminationHandler = { finishedProcess in
-            output.fileHandleForReading.readabilityHandler = nil
+            let reader = output.fileHandleForReading
+            reader.readabilityHandler = nil
+            // The readability handler runs asynchronously and may not have seen the last
+            // bytes written just before exit (often the actual error). Process closed our
+            // copy of the write end at launch, so this reads to EOF without blocking.
+            if let rest = try? reader.readToEnd(), !rest.isEmpty {
+                tail.append(rest)
+            }
             let status = finishedProcess.terminationStatus
             let text = tail.text
             Task { @MainActor in
@@ -134,10 +142,17 @@ final class RcloneRunner {
         return arguments
     }
 
-    /// Errors and notices only, and no periodic stats text (the UI polls rc instead),
-    /// so the in-memory output stays small and is mostly about what went wrong.
+    /// Errors and notices only, as JSON lines. The UI polls rc for live numbers; the
+    /// long stats interval exists so rclone still emits one final `stats` object at exit,
+    /// which captures runs that finish before the first poll.
     private var quietConsole: [String] {
-        ["--stats", "0", "--log-level", "NOTICE"]
+        [
+            "--log-level", "NOTICE",
+            "--use-json-log",
+            "--stats", "1h",
+            "--stats-log-level", "NOTICE",
+            "--stats-one-line"
+        ]
     }
 
     /// rclone exit codes, see https://rclone.org/docs/#exit-code

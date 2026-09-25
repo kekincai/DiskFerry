@@ -8,10 +8,28 @@ final class TransferMonitor: ObservableObject {
     @Published private(set) var progress: TransferProgress = .empty
 
     private var badgePercent: Int?
+    private var liveSession = 0
 
     func reset() {
         progress = .empty
         updateDockBadge()
+    }
+
+    /// Starts accepting polled samples for one rclone process.
+    func beginLiveSession() -> Int {
+        liveSession += 1
+        return liveSession
+    }
+
+    /// Rejects polled samples still in flight after rclone exits, so a stale sample can
+    /// never overwrite the final numbers (or leak into the next phase).
+    func endLiveSession() {
+        liveSession += 1
+    }
+
+    func apply(_ next: TransferProgress, session: Int) {
+        guard session == liveSession else { return }
+        apply(next)
     }
 
     func apply(_ next: TransferProgress) {

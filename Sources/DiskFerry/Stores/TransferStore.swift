@@ -425,6 +425,7 @@ final class TransferStore: ObservableObject {
 
     private func finishCopy(exitCode: Int32, output: String, dryRun: Bool) {
         stopPolling()
+        applyFinalStats(from: output, verifying: false)
         finishedAt = Date()
 
         if isStopping {
@@ -498,6 +499,7 @@ final class TransferStore: ObservableObject {
 
     private func finishVerification(exitCode: Int32, output: String) {
         stopPolling()
+        applyFinalStats(from: output, verifying: true)
         finishedAt = Date()
 
         if isStopping {
@@ -575,9 +577,11 @@ final class TransferStore: ObservableObject {
         let client = RcloneStatsClient(remote: remote)
         let monitor = monitor
         let checkFirst = task.checkFirst
+        let session = monitor.beginLiveSession()
         pollTask = Task.detached(priority: .utility) {
             var meter = SpeedMeter()
-            // Give rclone a moment to open its rc port.
+            // Give rclone a moment to open its rc port. Runs that finish sooner are
+            // covered by the final stats rclone prints at exit.
             try? await Task.sleep(for: .milliseconds(300))
             while !Task.isCancelled {
                 if let stats = try? await client.fetch() {
@@ -589,7 +593,7 @@ final class TransferStore: ObservableObject {
                         currentSpeed: speed
                     )
                     guard !Task.isCancelled else { break }
-                    await monitor.apply(progress)
+                    await monitor.apply(progress, session: session)
                 }
                 try? await Task.sleep(for: .seconds(1))
             }
@@ -599,6 +603,18 @@ final class TransferStore: ObservableObject {
     private func stopPolling() {
         pollTask?.cancel()
         pollTask = nil
+        monitor.endLiveSession()
+    }
+
+    /// Replaces the last polled sample with the stats rclone printed as it exited.
+    private func applyFinalStats(from output: String, verifying: Bool) {
+        guard let stats = RcloneOutput.finalStats(output) else { return }
+        monitor.apply(TransferProgress(
+            stats: stats,
+            verifying: verifying,
+            checkFirst: task.checkFirst,
+            currentSpeed: 0
+        ))
     }
 
     // MARK: - Locations
