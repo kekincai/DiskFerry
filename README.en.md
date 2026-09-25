@@ -46,16 +46,22 @@ external drive / local folder  ──rclone──▶  SMB share / NAS / another 
 
 ## Install
 
-Requires macOS 13+ and rclone:
+Requires macOS 13+ (Apple silicon or Intel) and rclone:
 
 ```bash
 brew install rclone
-git clone https://github.com/kekincai/DiskFerry.git
-cd DiskFerry
-./script/build_and_run.sh
 ```
 
-The script builds `dist/DiskFerry.app`, which you can move to Applications.
+**Download:** get the latest `DiskFerry-x.y.z.dmg` from [Releases](https://github.com/kekincai/DiskFerry/releases/latest) and drag **Disk Ferry** to Applications. The builds are not notarized yet, so the first time, **right-click → Open** in Applications. If macOS says the app is damaged, run `xattr -dr com.apple.quarantine "/Applications/Disk Ferry.app"`.
+
+**From source:**
+
+```bash
+git clone https://github.com/kekincai/DiskFerry.git
+cd DiskFerry
+./script/build_and_run.sh              # debug build and launch
+./script/package_release.sh 0.0.0      # universal .dmg / .zip in dist/release/
+```
 
 ## How live progress works
 

@@ -15,6 +15,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Install rclone
+        run: brew install rclone
+
       - name: Build
         run: swift build
 

@@ -44,21 +44,29 @@ Disk Ferry 把这件事交给 [rclone](https://rclone.org/)，自己只做一件
 
 ## 安装
 
-需要 macOS 13 或更高版本，以及 rclone：
+需要 macOS 13 或更高版本（Apple 芯片和 Intel 都支持），以及 rclone：
 
 ```bash
 brew install rclone
 ```
 
-从源码构建并启动（需要 Xcode 命令行工具 / Swift 5.9+）：
+### 下载（推荐）
+
+1. 到 [Releases](https://github.com/kekincai/DiskFerry/releases/latest) 下载最新的 `DiskFerry-x.y.z.dmg`。
+2. 打开后把 **Disk Ferry** 拖进“应用程序”。
+3. 第一次打开时，在“应用程序”里 **右键 → 打开**，再点“打开”。目前的版本没有经过 Apple 公证，macOS 只会在第一次这样确认。
+   如果提示“已损坏，无法打开”，在终端执行：`xattr -dr com.apple.quarantine "/Applications/Disk Ferry.app"`
+
+### 从源码构建
+
+需要 Xcode 命令行工具（Swift 5.9+）：
 
 ```bash
 git clone https://github.com/kekincai/DiskFerry.git
 cd DiskFerry
-./script/build_and_run.sh
+./script/build_and_run.sh              # 调试构建并启动
+./script/package_release.sh 0.0.0      # 打包通用版 .dmg / .zip 到 dist/release/
 ```
-
-脚本会生成 `dist/DiskFerry.app`，可以拖到“应用程序”文件夹里使用。
 
 ## 使用
 
