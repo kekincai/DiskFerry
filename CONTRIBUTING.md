@@ -16,8 +16,11 @@ Verify:
 
 ```bash
 swift build
+swift test
 ./script/build_and_run.sh --verify
 ```
+
+`swift test` includes an end-to-end copy against the real `rclone` binary when it is installed, and skips it otherwise.
 
 ## Design Rules
 
@@ -25,7 +28,9 @@ swift build
 - Do not preview image or video contents.
 - Do not parse EXIF metadata.
 - Do not create file-content caches or large manifests.
-- Keep full transfer logs on the destination disk by default.
+- Do not write log or report files; keep rclone output in memory and show it only when a run fails.
+- Never block the main thread on filesystem calls: a stalled SMB mount must not freeze the window.
+- Live progress comes from rclone's rc stats. Keep per-second updates confined to the progress views.
 - Prefer `rclone` for transfer and verification behavior.
 - Keep SMB and external-drive operations conservative.
 
@@ -46,4 +51,4 @@ For bugs, include:
 - rclone version
 - Source and target type, for example external APFS drive to SMB mount
 - Whether the target path is under `/Volumes`
-- Relevant log excerpts, with private paths redacted
+- The rclone output shown in the window after the failure (use “拷贝”), with private paths redacted
