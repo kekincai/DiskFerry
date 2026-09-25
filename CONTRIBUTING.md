@@ -36,7 +36,7 @@ swift test
 
 ## Releasing
 
-1. Move the `## Unreleased` entries in `CHANGELOG.md` under a new `## x.y.z` heading and merge that to `main`.
+1. Move the `## Unreleased` entries in `CHANGELOG.md` under a new `## x.y.z - YYYY-MM-DD` heading and merge that to `main`.
 2. Tag and push: `git tag vx.y.z && git push origin vx.y.z`.
 3. The **Release** workflow tests, builds a universal app, and publishes `DiskFerry-x.y.z.dmg`, `.zip` and `SHA256SUMS.txt` with the changelog section as notes. Tags with a suffix (`v0.3.0-beta.1`) become pre-releases.
 
