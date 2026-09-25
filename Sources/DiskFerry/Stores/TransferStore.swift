@@ -43,8 +43,8 @@ final class TransferStore: ObservableObject {
     @Published private(set) var headline = "拖入或选择源文件夹和目标位置。"
     @Published private(set) var failureDetails: [String] = []
     @Published private(set) var precheckItems: [PrecheckItem] = []
-    @Published private(set) var currentLogFile = ""
-    @Published private(set) var currentSummaryFile = ""
+    /// rclone output of the last failed run, in memory only.
+    @Published private(set) var failureLog: [String] = []
     @Published private(set) var startedAt: Date?
     @Published private(set) var finishedAt: Date?
     @Published private(set) var lastResult: RunRecord?
@@ -86,7 +86,6 @@ final class TransferStore: ObservableObject {
         self.task = saved.first(where: { !$0.isPinned }) ?? saved.first ?? .empty
         let storedPath = UserDefaults.standard.string(forKey: Self.rclonePathKey) ?? ""
         self.rclonePath = storedPath.isEmpty ? (RcloneLocator.locate(preferredPath: nil) ?? "") : storedPath
-        task.refreshLogDirectory()
         if task.isReady {
             headline = "已载入上次的路线。"
         }
@@ -365,13 +364,13 @@ final class TransferStore: ObservableObject {
         status = .prechecking
         headline = "正在检查源、目标和 rclone…"
         failureDetails = []
+        failureLog = []
         precheckItems = []
         lastResult = nil
         isDryRunResult = dryRun
         activeDestinationSnapshot = nil
         copyProgress = nil
         monitor.reset()
-        task.refreshLogDirectory()
 
         let snapshotTask = task
         let preferredRclone = rclonePath
@@ -394,15 +393,7 @@ final class TransferStore: ObservableObject {
     }
 
     private func launch(dryRun: Bool, rclone: String, snapshot: DestinationPathPolicy.Snapshot, streamLocalCopies: Bool) {
-        let startDate = Date()
-        let stamp = DateStamp.makeLogStamp(date: startDate)
-        let suffix = dryRun ? "-dry-run" : ""
-        let logURL = snapshot.logDirectory.appendingPathComponent("\(stamp)\(suffix).log")
-        let summaryURL = snapshot.logDirectory.appendingPathComponent("\(stamp)\(suffix).summary.json")
-
-        currentLogFile = logURL.path
-        currentSummaryFile = ""
-        startedAt = startDate
+        startedAt = Date()
         finishedAt = nil
         isStopping = false
         activeDestinationSnapshot = snapshot
@@ -413,12 +404,11 @@ final class TransferStore: ObservableObject {
             try runner.start(
                 rclonePath: rclone,
                 task: task,
-                logFile: logURL.path,
                 dryRun: dryRun,
                 streamLocalCopies: streamLocalCopies,
                 remote: remote,
                 onFinish: { [weak self] exitCode, output in
-                    self?.finishCopy(exitCode: exitCode, output: output, dryRun: dryRun, summaryURL: summaryURL)
+                    self?.finishCopy(exitCode: exitCode, output: output, dryRun: dryRun)
                 }
             )
             status = dryRun ? .dryRunning : .running
@@ -430,33 +420,30 @@ final class TransferStore: ObservableObject {
             status = .failed
             finishedAt = Date()
             headline = "无法启动 rclone：\(error.localizedDescription)"
-            writeSummary(status: "failed", summaryURL: summaryURL, progress: monitor.progress)
         }
     }
 
-    private func finishCopy(exitCode: Int32, output: String, dryRun: Bool, summaryURL: URL) {
+    private func finishCopy(exitCode: Int32, output: String, dryRun: Bool) {
         stopPolling()
-        let endDate = Date()
-        finishedAt = endDate
+        finishedAt = Date()
 
         if isStopping {
             monitor.markStopped()
-            complete(outcome: .cancelled, headline: "已中断。再次运行会从断点继续，已完成的文件自动跳过。", summaryURL: summaryURL, summaryStatus: "cancelled")
+            complete(outcome: .cancelled, headline: "已中断。再次运行会从断点继续，已完成的文件自动跳过。")
             return
         }
 
         guard exitCode == 0 else {
             monitor.markStopped()
-            let reason = RcloneRunner.describe(exitCode: exitCode)
-            collectFailureDetails(output: output)
-            complete(outcome: .failed, headline: "复制未完成：\(reason)", summaryURL: summaryURL, summaryStatus: "failed")
+            recordFailure(output: output)
+            complete(outcome: .failed, headline: "复制未完成：\(RcloneRunner.describe(exitCode: exitCode))")
             return
         }
 
         monitor.markSucceeded()
         if !dryRun, task.verifyAfterCopy {
             copyProgress = monitor.progress
-            startVerification(summaryURL: summaryURL)
+            startVerification()
             return
         }
 
@@ -471,76 +458,66 @@ final class TransferStore: ObservableObject {
                 ? "完成：目标已是最新，没有需要复制的文件。"
                 : "复制完成。"
         }
-        complete(
-            outcome: dryRun ? .dryRun : .completed,
-            headline: message,
-            summaryURL: summaryURL,
-            summaryStatus: dryRun ? "dry-run-completed" : "completed"
-        )
+        complete(outcome: dryRun ? .dryRun : .completed, headline: message)
     }
 
-    private func startVerification(summaryURL: URL) {
+    private func startVerification() {
         do {
             guard let activeDestinationSnapshot else {
                 throw DestinationPathPolicy.PolicyError.emptyPath
             }
             try DestinationPathPolicy.validate(activeDestinationSnapshot)
         } catch {
-            complete(outcome: .failed, headline: "复制完成，但目标路径安全检查失败：\(error.localizedDescription)", summaryURL: summaryURL, summaryStatus: "copy-completed-check-failed")
+            complete(outcome: .failed, headline: "复制完成，但目标路径安全检查失败：\(error.localizedDescription)")
             return
         }
 
         guard let rclone = RcloneLocator.locate(preferredPath: rclonePath) else {
-            complete(outcome: .failed, headline: "复制完成，但找不到 rclone，无法校验。", summaryURL: summaryURL, summaryStatus: "copy-completed-check-failed")
+            complete(outcome: .failed, headline: "复制完成，但找不到 rclone，无法校验。")
             return
         }
-
-        let checkLogURL = URL(fileURLWithPath: task.logDirectoryPath)
-            .appendingPathComponent("\(DateStamp.makeLogStamp())-check.log")
 
         do {
             let remote = try RcloneRemoteControl.makeLocal()
             try runner.startCheck(
                 rclonePath: rclone,
                 task: task,
-                logFile: checkLogURL.path,
                 remote: remote,
                 onFinish: { [weak self] exitCode, output in
-                    self?.finishVerification(exitCode: exitCode, output: output, logFile: checkLogURL.path, summaryURL: summaryURL)
+                    self?.finishVerification(exitCode: exitCode, output: output)
                 }
             )
             status = .verifying
             headline = "复制完成，正在按文件大小校验…"
-            currentLogFile = checkLogURL.path
             monitor.reset()
             startPolling(remote: remote, verifying: true)
         } catch {
-            complete(outcome: .failed, headline: "复制完成，但无法启动校验：\(error.localizedDescription)", summaryURL: summaryURL, summaryStatus: "copy-completed-check-failed")
+            complete(outcome: .failed, headline: "复制完成，但无法启动校验：\(error.localizedDescription)")
         }
     }
 
-    private func finishVerification(exitCode: Int32, output: String, logFile: String, summaryURL: URL) {
+    private func finishVerification(exitCode: Int32, output: String) {
         stopPolling()
         finishedAt = Date()
 
         if isStopping {
             monitor.markStopped()
-            complete(outcome: .completed, headline: "校验已中断。复制本身已经完成。", summaryURL: summaryURL, summaryStatus: "copy-completed-check-cancelled")
+            complete(outcome: .completed, headline: "校验已中断。复制本身已经完成。")
             return
         }
 
         if exitCode == 0 {
             monitor.markSucceeded()
-            complete(outcome: .verified, headline: "复制完成，校验通过：所有文件大小一致。", summaryURL: summaryURL, summaryStatus: "completed-verified-size-only")
+            complete(outcome: .verified, headline: "复制完成，校验通过：所有文件大小一致。")
         } else {
             monitor.markStopped()
-            collectFailureDetails(output: output)
-            complete(outcome: .failed, headline: "复制完成，但校验发现差异。请查看校验日志。", summaryURL: summaryURL, summaryStatus: "completed-check-failed")
+            recordFailure(output: output)
+            complete(outcome: .failed, headline: "复制完成，但校验发现差异。")
         }
     }
 
     /// Common bookkeeping once a run is over.
-    private func complete(outcome: RunOutcome, headline: String, summaryURL: URL, summaryStatus: String) {
+    private func complete(outcome: RunOutcome, headline: String) {
         let endDate = finishedAt ?? Date()
         finishedAt = endDate
         let progress = copyProgress ?? monitor.progress
@@ -562,7 +539,6 @@ final class TransferStore: ObservableObject {
         )
         lastResult = record
 
-        writeSummary(status: summaryStatus, summaryURL: summaryURL, progress: progress)
         if outcome != .dryRun {
             saveRun(record)
         }
@@ -571,32 +547,20 @@ final class TransferStore: ObservableObject {
         notifyFinished(outcome: outcome, message: headline)
     }
 
-    private func collectFailureDetails(output: String) {
-        let logFile = currentLogFile
-        let consoleLines = output
-            .split(separator: "\n")
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
-            .suffix(3)
-        failureDetails = Array(consoleLines)
-        Task {
-            let lines = await Task.detached(priority: .utility) {
-                LogTail.recentErrors(path: logFile)
-            }.value
-            if !lines.isEmpty {
-                failureDetails = lines
-            }
-        }
+    /// rclone's console output is kept in memory only and shown just for failed runs.
+    private func recordFailure(output: String) {
+        failureLog = RcloneOutput.displayLines(output)
+        let errors = RcloneOutput.errorLines(output)
+        failureDetails = errors.isEmpty ? Array(failureLog.suffix(3)) : errors
     }
 
     private func resetRunState(message: String) {
         status = .idle
         headline = message
         failureDetails = []
+        failureLog = []
         precheckItems = []
         lastResult = nil
-        currentLogFile = ""
-        currentSummaryFile = ""
         startedAt = nil
         finishedAt = nil
         heatmapItems = []
@@ -733,22 +697,6 @@ final class TransferStore: ObservableObject {
 
     // MARK: - Finder helpers
 
-    func openLogDirectory() {
-        let path = task.logDirectoryPath
-        guard !path.isEmpty, FileManager.default.fileExists(atPath: path) else { return }
-        NSWorkspace.shared.open(URL(fileURLWithPath: path, isDirectory: true))
-    }
-
-    func revealLogFile() {
-        guard !currentLogFile.isEmpty else { return openLogDirectory() }
-        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: currentLogFile)])
-    }
-
-    func openLogFile() {
-        guard !currentLogFile.isEmpty else { return }
-        NSWorkspace.shared.open(URL(fileURLWithPath: currentLogFile))
-    }
-
     func revealInFinder(_ role: LocationRole) {
         let path = role == .source ? task.sourcePath : task.resolvedTargetPath
         guard !path.isEmpty else { return }
@@ -824,42 +772,6 @@ final class TransferStore: ObservableObject {
     private func persistRoutes() {
         routes = TaskStorage.trimmed(routes)
         storage.saveRecentTasks(routes)
-    }
-
-    private func writeSummary(status: String, summaryURL: URL, progress: TransferProgress) {
-        do {
-            guard let activeDestinationSnapshot else {
-                throw DestinationPathPolicy.PolicyError.emptyPath
-            }
-            try DestinationPathPolicy.validate(activeDestinationSnapshot)
-        } catch {
-            return
-        }
-
-        let summary = TransferSummary(
-            taskName: task.displayName,
-            source: task.sourcePath,
-            target: task.resolvedTargetPath,
-            startedAt: startedAt ?? Date(),
-            finishedAt: finishedAt ?? Date(),
-            status: status,
-            engine: task.engine,
-            transfers: task.transfers,
-            checkers: task.checkers,
-            logFile: currentLogFile,
-            bytesTransferred: progress.bytes,
-            filesTransferred: progress.transfers,
-            filesSkipped: progress.skippedFiles,
-            errors: progress.errors
-        )
-
-        do {
-            let data = try JSONCoding.encoder.encode(summary)
-            try data.write(to: summaryURL, options: .atomic)
-            currentSummaryFile = summaryURL.path
-        } catch {
-            // The rclone log on the destination remains the source of truth.
-        }
     }
 
     // MARK: - System integration

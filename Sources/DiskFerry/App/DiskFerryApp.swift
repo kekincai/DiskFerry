@@ -41,12 +41,6 @@ struct DiskFerryApp: App {
                 Button("停止") { store.stop() }
                     .keyboardShortcut(".", modifiers: .command)
                     .disabled(!store.canStop)
-
-                Divider()
-
-                Button("打开日志文件夹") { store.openLogDirectory() }
-                    .keyboardShortcut("l", modifiers: [.command, .shift])
-                    .disabled(store.task.targetPath.isEmpty)
             }
         }
 

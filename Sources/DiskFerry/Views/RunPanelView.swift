@@ -17,7 +17,7 @@ struct RunPanelView: View {
                 actions
             }
 
-            if showsProgress {
+            if showsProgress, monitor.progress.hasStarted || store.status.isRunningProcess {
                 LiveProgressView(monitor: monitor, status: store.status, isDryRun: store.isDryRunResult)
             }
 
@@ -25,26 +25,16 @@ struct RunPanelView: View {
                 ResultSummary(
                     result: result,
                     isFromEarlierRun: store.status == .idle,
-                    onOpenTarget: { store.revealInFinder(.target) },
-                    onOpenLog: { store.revealLogFile() },
-                    hasLog: !store.currentLogFile.isEmpty
+                    onOpenTarget: { store.revealInFinder(.target) }
                 )
             }
 
-            if !store.failureDetails.isEmpty, store.status == .failed {
-                VStack(alignment: .leading, spacing: 4) {
-                    ForEach(Array(store.failureDetails.enumerated()), id: \.offset) { _, line in
-                        Text(line)
-                            .font(.system(.caption, design: .monospaced))
-                            .foregroundStyle(.red)
-                            .lineLimit(2)
-                            .truncationMode(.middle)
-                            .textSelection(.enabled)
-                    }
-                }
-                .padding(10)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color.red.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+            if store.status == .failed, !store.failureDetails.isEmpty || !store.failureLog.isEmpty {
+                FailureLogView(
+                    errors: store.failureDetails,
+                    log: store.failureLog,
+                    onCopy: { store.copyPathToClipboard(store.failureLog.joined(separator: "\n")) }
+                )
             }
         }
         .cardStyle()
@@ -232,8 +222,6 @@ private struct ResultSummary: View {
     var result: RunRecord
     var isFromEarlierRun: Bool
     var onOpenTarget: () -> Void
-    var onOpenLog: () -> Void
-    var hasLog: Bool
 
     var body: some View {
         HStack(spacing: 10) {
@@ -247,9 +235,6 @@ private struct ResultSummary: View {
             if result.outcome != .dryRun {
                 Button("打开目标文件夹", action: onOpenTarget)
             }
-            if hasLog {
-                Button("查看日志", action: onOpenLog)
-            }
         }
         .controlSize(.small)
     }
@@ -257,7 +242,11 @@ private struct ResultSummary: View {
     private var summaryText: String {
         guard isFromEarlierRun else {
             // The live metrics above already show this run's numbers.
-            return result.outcome == .dryRun ? "预演不会写入任何文件。" : "日志和 summary.json 已写入目标的 _transfer_logs。"
+            switch result.outcome {
+            case .dryRun: return "预演不会写入任何文件。"
+            case .failed, .cancelled: return "已复制的文件会保留，“继续复制”只补齐剩下的。"
+            case .completed, .verified: return "已保存到左侧路线，下次一键再次同步。"
+            }
         }
         var parts = ["上次：\(TransferFormatters.relativeDate(result.finishedAt)) \(result.outcome.label)"]
         if result.outcome != .dryRun {
@@ -269,5 +258,53 @@ private struct ResultSummary: View {
             parts.append("\(result.errors) 个错误")
         }
         return parts.joined(separator: " · ")
+    }
+}
+
+/// rclone's output for a failed run. Lives only in memory; nothing is written to disk.
+private struct FailureLogView: View {
+    var errors: [String]
+    var log: [String]
+    var onCopy: () -> Void
+
+    @State private var showsFullLog = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(Array(errors.enumerated()), id: \.offset) { _, line in
+                Text(line)
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(.red)
+                    .lineLimit(3)
+                    .truncationMode(.middle)
+                    .textSelection(.enabled)
+            }
+
+            if !log.isEmpty {
+                HStack {
+                    Button(showsFullLog ? "收起 rclone 输出" : "显示 rclone 输出（\(log.count) 行）") {
+                        showsFullLog.toggle()
+                    }
+                    .buttonStyle(.link)
+                    Spacer()
+                    Button("拷贝", action: onCopy)
+                        .controlSize(.small)
+                }
+                .font(.caption)
+
+                if showsFullLog {
+                    ScrollView {
+                        Text(log.joined(separator: "\n"))
+                            .font(.system(.caption, design: .monospaced))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxHeight: 180)
+                }
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.red.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
     }
 }

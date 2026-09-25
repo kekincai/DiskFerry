@@ -1,8 +1,8 @@
 import Foundation
 
-/// Owns one rclone child process at a time. Everything rclone logs goes to `--log-file`
-/// on the destination; live numbers come from its rc server (see `RcloneStatsClient`).
-/// stdout/stderr are only kept as a small tail for startup errors such as a bad flag.
+/// Owns one rclone child process at a time. Nothing is written to disk besides the copied
+/// files: live numbers come from rclone's rc server (see `RcloneStatsClient`), and its
+/// console output (NOTICE and above) is kept in memory to explain a failed run.
 final class RcloneRunner {
     private var process: Process?
     private var outputTail: OutputTail?
@@ -14,7 +14,6 @@ final class RcloneRunner {
     func start(
         rclonePath: String,
         task: TransferTask,
-        logFile: String,
         dryRun: Bool,
         streamLocalCopies: Bool,
         remote: RcloneRemoteControl,
@@ -22,7 +21,7 @@ final class RcloneRunner {
     ) throws {
         try start(
             rclonePath: rclonePath,
-            arguments: makeArguments(task: task, logFile: logFile, dryRun: dryRun, streamLocalCopies: streamLocalCopies)
+            arguments: makeArguments(task: task, dryRun: dryRun, streamLocalCopies: streamLocalCopies)
                 + remote.arguments,
             onFinish: onFinish
         )
@@ -31,13 +30,12 @@ final class RcloneRunner {
     func startCheck(
         rclonePath: String,
         task: TransferTask,
-        logFile: String,
         remote: RcloneRemoteControl,
         onFinish: @escaping @MainActor (Int32, String) -> Void
     ) throws {
         try start(
             rclonePath: rclonePath,
-            arguments: makeCheckArguments(task: task, logFile: logFile) + remote.arguments,
+            arguments: makeCheckArguments(task: task) + remote.arguments,
             onFinish: onFinish
         )
     }
@@ -84,7 +82,7 @@ final class RcloneRunner {
         process.terminate()
     }
 
-    func makeArguments(task: TransferTask, logFile: String, dryRun: Bool, streamLocalCopies: Bool = false) -> [String] {
+    func makeArguments(task: TransferTask, dryRun: Bool, streamLocalCopies: Bool = false) -> [String] {
         var arguments = [
             "copy",
             task.sourcePath,
@@ -106,9 +104,6 @@ final class RcloneRunner {
         }
 
         arguments.append(contentsOf: [
-            // Periodic stats in the log file are for the record only; the UI polls rc.
-            "--stats", "30s",
-            "--stats-log-level", "NOTICE",
             "--transfers", "\(task.transfers)",
             "--checkers", "\(task.checkers)",
             "--retries", "\(task.retries)",
@@ -119,15 +114,11 @@ final class RcloneRunner {
             arguments.append(contentsOf: ["--exclude", exclude])
         }
 
-        arguments.append(contentsOf: [
-            "--log-file", logFile,
-            "--log-level", "INFO"
-        ])
-
+        arguments.append(contentsOf: quietConsole)
         return arguments
     }
 
-    func makeCheckArguments(task: TransferTask, logFile: String) -> [String] {
+    func makeCheckArguments(task: TransferTask) -> [String] {
         var arguments = [
             "check",
             task.sourcePath,
@@ -139,19 +130,22 @@ final class RcloneRunner {
         for exclude in task.excludes {
             arguments.append(contentsOf: ["--exclude", exclude])
         }
-        arguments.append(contentsOf: [
-            "--log-file", logFile,
-            "--log-level", "INFO"
-        ])
+        arguments.append(contentsOf: quietConsole)
         return arguments
+    }
+
+    /// Errors and notices only, and no periodic stats text (the UI polls rc instead),
+    /// so the in-memory output stays small and is mostly about what went wrong.
+    private var quietConsole: [String] {
+        ["--stats", "0", "--log-level", "NOTICE"]
     }
 
     /// rclone exit codes, see https://rclone.org/docs/#exit-code
     static func describe(exitCode: Int32) -> String {
         switch exitCode {
         case 0: "成功"
-        case 1: "参数或命令错误"
-        case 2: "发生错误（详见日志）"
+        case 1: "部分文件复制失败"
+        case 2: "参数或命令错误"
         case 3: "找不到目录"
         case 4: "找不到文件"
         case 5: "临时错误，可以重试（例如网络中断）"
@@ -169,7 +163,7 @@ final class RcloneRunner {
 private final class OutputTail: @unchecked Sendable {
     private let lock = NSLock()
     private var buffer = Data()
-    private let limit = 8 * 1_024
+    private let limit = 64 * 1_024
 
     func append(_ data: Data) {
         lock.lock()

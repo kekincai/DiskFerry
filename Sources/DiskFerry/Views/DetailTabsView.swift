@@ -9,7 +9,6 @@ struct DetailTabsView: View {
     enum Tab: String, CaseIterable, Identifiable {
         case files
         case checks
-        case log
         case compare
 
         var id: String { rawValue }
@@ -18,7 +17,6 @@ struct DetailTabsView: View {
             switch self {
             case .files: "正在传输"
             case .checks: "检查结果"
-            case .log: "日志"
             case .compare: "目录对比"
             }
         }
@@ -41,13 +39,6 @@ struct DetailTabsView: View {
                     ActiveFilesView(monitor: monitor, isRunning: store.status.isRunningProcess)
                 case .checks:
                     ChecksView(items: store.precheckItems)
-                case .log:
-                    LogTailView(
-                        path: store.currentLogFile,
-                        isLive: store.status.isRunningProcess,
-                        onReveal: store.revealLogFile,
-                        onOpen: store.openLogFile
-                    )
                 case .compare:
                     HeatmapView(
                         lastRefresh: store.lastHeatmapRefresh,
@@ -126,7 +117,7 @@ private struct ChecksView: View {
 
     var body: some View {
         if items.isEmpty {
-            Placeholder(symbol: "checklist", text: "开始复制或预演时会自动检查 rclone、源、目标、写入权限和日志目录。")
+            Placeholder(symbol: "checklist", text: "开始复制或预演时会自动检查 rclone、源、目标和写入权限。")
         } else {
             ScrollView {
                 VStack(alignment: .leading, spacing: 8) {
@@ -163,63 +154,6 @@ private struct ChecksView: View {
         case .ok: .green
         case .warning: .orange
         case .error: .red
-        }
-    }
-}
-
-/// Shows the end of the rclone log. Reads the file only while this tab is visible,
-/// and keeps the text in view-local state so refreshes never touch the rest of the window.
-private struct LogTailView: View {
-    var path: String
-    var isLive: Bool
-    var onReveal: () -> Void
-    var onOpen: () -> Void
-
-    @State private var text = ""
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if path.isEmpty {
-                Placeholder(symbol: "doc.text", text: "完整日志写在目标的 _transfer_logs 文件夹里，开始复制后可以在这里查看最新内容。")
-            } else {
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        Text(text.isEmpty ? "日志还没有内容…" : text)
-                            .font(.system(.caption, design: .monospaced))
-                            .foregroundStyle(text.isEmpty ? .secondary : .primary)
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        Color.clear.frame(height: 1).id("end")
-                    }
-                    .onChange(of: text) { _ in
-                        proxy.scrollTo("end", anchor: .bottom)
-                    }
-                }
-                HStack {
-                    Text(isLive ? "每 2 秒刷新，只显示最后 64 KB" : "显示最后 64 KB")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Button("在 Finder 中显示", action: onReveal)
-                    Button("打开完整日志", action: onOpen)
-                }
-                .controlSize(.small)
-            }
-        }
-        .task(id: "\(path)|\(isLive)") {
-            guard !path.isEmpty else {
-                text = ""
-                return
-            }
-            repeat {
-                let current = path
-                let tail = await Task.detached(priority: .utility) {
-                    LogTail.read(path: current) ?? ""
-                }.value
-                if tail != text { text = tail }
-                guard isLive else { break }
-                try? await Task.sleep(for: .seconds(2))
-            } while !Task.isCancelled
         }
     }
 }

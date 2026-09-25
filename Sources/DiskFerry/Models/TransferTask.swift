@@ -6,7 +6,6 @@ struct TransferTask: Codable, Identifiable, Equatable {
     var name: String
     var sourcePath: String
     var targetPath: String
-    var logDirectory: String
     var engine: String
     var mode: CopyMode
     var transfers: Int
@@ -37,7 +36,6 @@ struct TransferTask: Codable, Identifiable, Equatable {
             name: "",
             sourcePath: "",
             targetPath: "",
-            logDirectory: "",
             engine: "rclone",
             mode: .conservative,
             transfers: 1,
@@ -60,7 +58,6 @@ struct TransferTask: Codable, Identifiable, Equatable {
         name: String,
         sourcePath: String,
         targetPath: String,
-        logDirectory: String,
         engine: String,
         mode: CopyMode,
         transfers: Int,
@@ -80,7 +77,6 @@ struct TransferTask: Codable, Identifiable, Equatable {
         self.name = name
         self.sourcePath = sourcePath
         self.targetPath = targetPath
-        self.logDirectory = logDirectory
         self.engine = engine
         self.mode = mode
         self.transfers = transfers
@@ -98,7 +94,7 @@ struct TransferTask: Codable, Identifiable, Equatable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, sourcePath, targetPath, logDirectory, engine, mode, transfers, checkers
+        case id, name, sourcePath, targetPath, engine, mode, transfers, checkers
         case retries, lowLevelRetries, excludes, verifyMode, verifyAfterCopy, targetLayout
         case checkFirst, isPinned, createdAt, lastRun
     }
@@ -111,7 +107,6 @@ struct TransferTask: Codable, Identifiable, Equatable {
         name = try container.decodeIfPresent(String.self, forKey: .name) ?? ""
         sourcePath = try container.decodeIfPresent(String.self, forKey: .sourcePath) ?? ""
         targetPath = try container.decodeIfPresent(String.self, forKey: .targetPath) ?? ""
-        logDirectory = try container.decodeIfPresent(String.self, forKey: .logDirectory) ?? ""
         engine = try container.decodeIfPresent(String.self, forKey: .engine) ?? fallback.engine
         mode = try container.decodeIfPresent(CopyMode.self, forKey: .mode) ?? fallback.mode
         transfers = try container.decodeIfPresent(Int.self, forKey: .transfers) ?? fallback.transfers
@@ -189,23 +184,6 @@ struct TransferTask: Codable, Identifiable, Equatable {
             transfers = max(1, min(transfers, 8))
             checkers = max(1, min(checkers, 16))
         }
-    }
-
-    var logDirectoryPath: String {
-        let destination = resolvedTargetPath
-        guard !destination.isEmpty else { return "" }
-        return URL(fileURLWithPath: destination).appendingPathComponent("_transfer_logs").path
-    }
-
-    mutating func refreshLogDirectory() {
-        let destination = resolvedTargetPath
-        guard !destination.isEmpty else {
-            logDirectory = ""
-            return
-        }
-        logDirectory = URL(fileURLWithPath: destination)
-            .appendingPathComponent("_transfer_logs")
-            .path
     }
 
     /// Same route, ignoring run history and display name.

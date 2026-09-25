@@ -93,7 +93,7 @@ private struct AdvancedOptionsView: View {
                 .disabled(!store.task.isReady)
             }
 
-            Text("日志保存在目标的 _transfer_logs 文件夹。rclone 路径可在“设置”中修改。")
+            Text("除了复制的文件，不会在目标或本机写入任何日志。rclone 路径可在“设置”中修改。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -106,7 +106,6 @@ private struct AdvancedOptionsView: View {
         guard store.task.isReady else { return "选择源和目标后显示。" }
         let arguments = RcloneRunner().makeArguments(
             task: store.task,
-            logFile: store.task.logDirectoryPath + "/<时间>.log",
             dryRun: false,
             streamLocalCopies: true
         )

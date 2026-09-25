@@ -3,7 +3,7 @@ import XCTest
 @testable import DiskFerry
 
 final class PrecheckServiceSecurityTests: XCTestCase {
-    func testPrecheckRejectsSymlinkedLogDirectory() throws {
+    func testPrecheckRejectsSymlinkedDestinationFolder() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         let source = root.appendingPathComponent("Photos", isDirectory: true)
@@ -13,8 +13,9 @@ final class PrecheckServiceSecurityTests: XCTestCase {
         try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        // target/Photos (the real write location) points outside the selected target.
         try FileManager.default.createSymbolicLink(
-            at: target.appendingPathComponent("_transfer_logs"),
+            at: target.appendingPathComponent("Photos"),
             withDestinationURL: outside
         )
         defer { try? FileManager.default.removeItem(at: root) }
@@ -22,8 +23,7 @@ final class PrecheckServiceSecurityTests: XCTestCase {
         var task = TransferTask.empty
         task.sourcePath = source.path
         task.targetPath = target.path
-        // Logs then live directly in the selected target, next to the planted symlink.
-        task.targetLayout = .merge
+        task.targetLayout = .intoFolder
 
         let result = PrecheckService().run(task: task, rclonePath: "/usr/bin/true")
 
@@ -31,6 +31,7 @@ final class PrecheckServiceSecurityTests: XCTestCase {
         XCTAssertTrue(result.items.contains {
             $0.title == "目标路径安全检查" && $0.severity == .error
         })
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: outside.path).isEmpty)
     }
 
     func testPrecheckRejectsTargetInsideSourceWithoutWritingIntoSource() throws {
@@ -68,8 +69,8 @@ final class PrecheckServiceSecurityTests: XCTestCase {
         task.targetPath = target.path
         let snapshot = try DestinationPathPolicy.prepare(task: task)
 
-        try FileManager.default.removeItem(at: snapshot.logDirectory)
-        try FileManager.default.createDirectory(at: snapshot.logDirectory, withIntermediateDirectories: false)
+        try FileManager.default.removeItem(at: snapshot.destination)
+        try FileManager.default.createDirectory(at: snapshot.destination, withIntermediateDirectories: false)
 
         XCTAssertThrowsError(try DestinationPathPolicy.validate(snapshot))
     }
@@ -99,7 +100,7 @@ final class PrecheckServiceSecurityTests: XCTestCase {
         XCTAssertTrue(outsideEntries.isEmpty)
     }
 
-    func testOrdinaryDestinationPassesAndCreatesLogDirectory() throws {
+    func testOrdinaryDestinationPassesWithoutWritingLogs() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         let source = root.appendingPathComponent("source", isDirectory: true)
@@ -114,6 +115,7 @@ final class PrecheckServiceSecurityTests: XCTestCase {
 
         let snapshot = try DestinationPathPolicy.prepare(task: task)
         XCTAssertNoThrow(try DestinationPathPolicy.validate(snapshot))
-        XCTAssertTrue(FileManager.default.fileExists(atPath: snapshot.logDirectory.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: snapshot.destination.path))
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: snapshot.destination.path).isEmpty)
     }
 }

@@ -50,11 +50,9 @@ struct PrecheckService {
             }
         }
 
-        var safeLogDirectory: String?
         if !task.targetPath.isEmpty, !hasPathConflict {
             do {
                 let destination = try DestinationPathPolicy.prepare(task: task)
-                safeLogDirectory = destination.logDirectory.path
                 try DestinationPathPolicy.validate(destination)
                 items.append(contentsOf: writeProbe(path: destination.selectedRoot.path))
                 try DestinationPathPolicy.validate(destination)
@@ -67,7 +65,7 @@ struct PrecheckService {
                 }
                 items.append(.init(
                     title: "目标路径安全检查",
-                    message: "目标和日志目录位于所选目录内，且不包含符号链接。",
+                    message: "写入位置位于所选目录内，且不包含符号链接。",
                     severity: .ok
                 ))
             } catch {
@@ -85,10 +83,6 @@ struct PrecheckService {
                 message: "目标位于 /Volumes/。如果复制中断，请先确认挂载没有断开。",
                 severity: .warning
             ))
-        }
-
-        if let safeLogDirectory {
-            items.append(.init(title: "日志目录", message: "可创建或已存在：\(safeLogDirectory)", severity: .ok))
         }
 
         return PrecheckResult(items: items)

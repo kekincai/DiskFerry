@@ -30,12 +30,10 @@ final class RcloneLiveStatsTests: XCTestCase {
         task.targetLayout = .intoFolder
 
         let remote = try RcloneRemoteControl.makeLocal()
-        let logFile = root.appendingPathComponent("run.log").path
         // Throttle so the copy lasts long enough to observe mid-flight numbers.
         XCTAssertTrue(RcloneCapabilities.supportsLocalNoClone(rclonePath: rclone))
         var arguments = RcloneRunner().makeArguments(
             task: task,
-            logFile: logFile,
             dryRun: false,
             streamLocalCopies: true
         )
@@ -70,9 +68,10 @@ final class RcloneLiveStatsTests: XCTestCase {
 
         process.waitUntilExit()
         XCTAssertEqual(process.terminationStatus, 0)
+        // Only the copied files: no log folder or summary written to the destination.
         XCTAssertEqual(
-            try FileManager.default.contentsOfDirectory(atPath: task.resolvedTargetPath).filter { $0.hasSuffix(".bin") }.count,
-            4
+            try FileManager.default.contentsOfDirectory(atPath: task.resolvedTargetPath).sorted(),
+            (0..<4).map { "file-\($0).bin" }
         )
     }
 }

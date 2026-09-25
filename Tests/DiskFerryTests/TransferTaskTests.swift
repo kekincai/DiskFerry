@@ -9,7 +9,6 @@ final class TransferTaskTests: XCTestCase {
         task.targetPath = "/Volumes/minipc/Backup"
         task.targetLayout = .intoFolder
         XCTAssertEqual(task.resolvedTargetPath, "/Volumes/minipc/Backup/Photos")
-        XCTAssertEqual(task.logDirectoryPath, "/Volumes/minipc/Backup/Photos/_transfer_logs")
 
         task.targetLayout = .merge
         XCTAssertEqual(task.resolvedTargetPath, "/Volumes/minipc/Backup")

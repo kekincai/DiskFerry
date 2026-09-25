@@ -10,10 +10,8 @@ enum DestinationPathPolicy {
     struct Snapshot {
         let selectedRoot: URL
         let destination: URL
-        let logDirectory: URL
         let selectedRootIdentity: DirectoryIdentity
         let destinationIdentity: DirectoryIdentity
-        let logDirectoryIdentity: DirectoryIdentity
     }
 
     enum PolicyError: LocalizedError {
@@ -49,30 +47,23 @@ enum DestinationPathPolicy {
 
         let root = standardizedDirectoryURL(path: task.targetPath)
         let destination = standardizedDirectoryURL(path: task.resolvedTargetPath)
-        let logDirectory = destination.appendingPathComponent("_transfer_logs", isDirectory: true).standardizedFileURL
 
         try ensureDirectory(at: root, within: root, createIfMissing: false)
         try ensureDirectory(at: destination, within: root, createIfMissing: true)
-        try ensureDirectory(at: logDirectory, within: root, createIfMissing: true)
         try verifyCanonicalContainment(candidate: destination, root: root)
-        try verifyCanonicalContainment(candidate: logDirectory, root: root)
 
         return Snapshot(
             selectedRoot: root,
             destination: destination,
-            logDirectory: logDirectory,
             selectedRootIdentity: try directoryIdentity(at: root),
-            destinationIdentity: try directoryIdentity(at: destination),
-            logDirectoryIdentity: try directoryIdentity(at: logDirectory)
+            destinationIdentity: try directoryIdentity(at: destination)
         )
     }
 
     static func validate(_ snapshot: Snapshot) throws {
         try validateDirectory(snapshot.selectedRoot, expected: snapshot.selectedRootIdentity)
         try validateDirectory(snapshot.destination, expected: snapshot.destinationIdentity)
-        try validateDirectory(snapshot.logDirectory, expected: snapshot.logDirectoryIdentity)
         try verifyCanonicalContainment(candidate: snapshot.destination, root: snapshot.selectedRoot)
-        try verifyCanonicalContainment(candidate: snapshot.logDirectory, root: snapshot.selectedRoot)
     }
 
     private static func standardizedDirectoryURL(path: String) -> URL {
