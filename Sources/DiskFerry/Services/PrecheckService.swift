@@ -32,8 +32,26 @@ struct PrecheckService {
         ))
 
         let resolvedTargetPath = task.resolvedTargetPath
+        // Checked before DestinationPathPolicy.prepare, which creates folders.
+        var hasPathConflict = false
+        if !task.sourcePath.isEmpty, !resolvedTargetPath.isEmpty {
+            let source = URL(fileURLWithPath: task.sourcePath).standardizedFileURL.path
+            let target = URL(fileURLWithPath: resolvedTargetPath).standardizedFileURL.path
+            if source == target {
+                hasPathConflict = true
+                items.append(.init(title: "路径检查", message: "源目录和目标目录不能相同。", severity: .error))
+            } else if PathInspector.isSameOrInside(target, source) {
+                hasPathConflict = true
+                items.append(.init(
+                    title: "路径检查",
+                    message: "目标位于源文件夹内部，复制会把自己复制进自己。请换一个目标。",
+                    severity: .error
+                ))
+            }
+        }
+
         var safeLogDirectory: String?
-        if !task.targetPath.isEmpty {
+        if !task.targetPath.isEmpty, !hasPathConflict {
             do {
                 let destination = try DestinationPathPolicy.prepare(task: task)
                 safeLogDirectory = destination.logDirectory.path
@@ -59,12 +77,6 @@ struct PrecheckService {
                     severity: .error
                 ))
             }
-        }
-
-        if !task.sourcePath.isEmpty,
-           !resolvedTargetPath.isEmpty,
-           URL(fileURLWithPath: task.sourcePath).standardizedFileURL == URL(fileURLWithPath: resolvedTargetPath).standardizedFileURL {
-            items.append(.init(title: "路径检查", message: "源目录和目标目录不能相同。", severity: .error))
         }
 
         if !task.targetPath.isEmpty, task.targetPath.hasPrefix("/Volumes/") {

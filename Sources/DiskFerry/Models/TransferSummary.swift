@@ -1,5 +1,6 @@
 import Foundation
 
+/// Written next to the rclone log as `<stamp>.summary.json`.
 struct TransferSummary: Codable {
     var taskName: String
     var source: String
@@ -11,4 +12,8 @@ struct TransferSummary: Codable {
     var transfers: Int
     var checkers: Int
     var logFile: String
+    var bytesTransferred: Int64
+    var filesTransferred: Int
+    var filesSkipped: Int
+    var errors: Int
 }

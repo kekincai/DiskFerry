@@ -3,41 +3,47 @@ import SwiftUI
 struct HeatmapView: View {
     var lastRefresh: Date?
     var items: [FolderHeatmapItem]
+    var isRefreshing: Bool
+    var canRefresh: Bool
     var onRefresh: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("文件夹热力图")
-                    .font(.headline)
+                Text("按顶层子文件夹对比源和目标的大小，颜色越深越接近完成。只看每个文件夹的第一层，结果仅供参考。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 Spacer()
                 if let lastRefresh {
-                    Text("更新于 \(lastRefresh.formatted(date: .omitted, time: .standard))")
+                    Text(lastRefresh.formatted(date: .omitted, time: .standard))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
                 Button {
                     onRefresh()
                 } label: {
-                    Label("刷新", systemImage: "arrow.clockwise")
+                    if isRefreshing {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Label("扫描", systemImage: "arrow.clockwise")
+                    }
                 }
-                Text("颜色越深，复制越接近完成")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                .controlSize(.small)
+                .disabled(!canRefresh || isRefreshing)
             }
 
             if items.isEmpty {
-                Text("默认不自动扫描，以保证复制时窗口滚动流畅。需要查看子文件夹状态时点“刷新”。")
-                    .foregroundStyle(.secondary)
+                Placeholder(symbol: "square.grid.3x3", text: "需要时点“扫描”。为了不拖慢复制，这里不会自动刷新。")
             } else {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 74), spacing: 8)], spacing: 8) {
-                    ForEach(items) { item in
-                        HeatmapCell(item: item)
+                ScrollView {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 84), spacing: 8)], spacing: 8) {
+                        ForEach(items) { item in
+                            HeatmapCell(item: item)
+                        }
                     }
                 }
             }
         }
-        .panelStyle()
     }
 }
 

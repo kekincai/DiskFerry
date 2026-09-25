@@ -1,10 +1,11 @@
 import Foundation
 
+/// Owns one rclone child process at a time. Everything rclone logs goes to `--log-file`
+/// on the destination; live numbers come from its rc server (see `RcloneStatsClient`).
+/// stdout/stderr are only kept as a small tail for startup errors such as a bad flag.
 final class RcloneRunner {
     private var process: Process?
-    private var stdoutHandle: FileHandle?
-    private var stderrHandle: FileHandle?
-    private var outputCoalescer: OutputCoalescer?
+    private var outputTail: OutputTail?
 
     var isRunning: Bool {
         process?.isRunning == true
@@ -15,14 +16,14 @@ final class RcloneRunner {
         task: TransferTask,
         logFile: String,
         dryRun: Bool,
-        onOutput: @escaping @Sendable (String) -> Void,
-        onFinish: @escaping @MainActor (Int32) -> Void
+        streamLocalCopies: Bool,
+        remote: RcloneRemoteControl,
+        onFinish: @escaping @MainActor (Int32, String) -> Void
     ) throws {
-        let arguments = makeArguments(task: task, logFile: logFile, dryRun: dryRun)
         try start(
             rclonePath: rclonePath,
-            arguments: arguments,
-            onOutput: onOutput,
+            arguments: makeArguments(task: task, logFile: logFile, dryRun: dryRun, streamLocalCopies: streamLocalCopies)
+                + remote.arguments,
             onFinish: onFinish
         )
     }
@@ -31,13 +32,12 @@ final class RcloneRunner {
         rclonePath: String,
         task: TransferTask,
         logFile: String,
-        onOutput: @escaping @Sendable (String) -> Void,
-        onFinish: @escaping @MainActor (Int32) -> Void
+        remote: RcloneRemoteControl,
+        onFinish: @escaping @MainActor (Int32, String) -> Void
     ) throws {
         try start(
             rclonePath: rclonePath,
-            arguments: makeCheckArguments(task: task, logFile: logFile),
-            onOutput: onOutput,
+            arguments: makeCheckArguments(task: task, logFile: logFile) + remote.arguments,
             onFinish: onFinish
         )
     }
@@ -45,45 +45,37 @@ final class RcloneRunner {
     private func start(
         rclonePath: String,
         arguments: [String],
-        onOutput: @escaping @Sendable (String) -> Void,
-        onFinish: @escaping @MainActor (Int32) -> Void
+        onFinish: @escaping @MainActor (Int32, String) -> Void
     ) throws {
         let process = Process()
-        let stdout = Pipe()
-        let stderr = Pipe()
-        let outputCoalescer = OutputCoalescer(interval: 2.0, onOutput: onOutput)
+        let output = Pipe()
+        let tail = OutputTail()
 
         process.executableURL = URL(fileURLWithPath: rclonePath)
         process.arguments = arguments
-        process.standardOutput = stdout
-        process.standardError = stderr
+        process.standardOutput = output
+        process.standardError = output
 
-        func attach(_ handle: FileHandle) {
-            handle.readabilityHandler = { [weak outputCoalescer] pipe in
-                let data = pipe.availableData
-                guard !data.isEmpty else { return }
-                let text = String(data: data, encoding: .utf8) ?? String(decoding: data, as: UTF8.self)
-                outputCoalescer?.append(text)
+        output.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            guard !data.isEmpty else {
+                handle.readabilityHandler = nil
+                return
             }
+            tail.append(data)
         }
 
-        attach(stdout.fileHandleForReading)
-        attach(stderr.fileHandleForReading)
-
-        process.terminationHandler = { [weak self] finishedProcess in
-            self?.stdoutHandle?.readabilityHandler = nil
-            self?.stderrHandle?.readabilityHandler = nil
-            self?.outputCoalescer?.flush()
+        process.terminationHandler = { finishedProcess in
+            output.fileHandleForReading.readabilityHandler = nil
+            let status = finishedProcess.terminationStatus
+            let text = tail.text
             Task { @MainActor in
-                onFinish(finishedProcess.terminationStatus)
+                onFinish(status, text)
             }
         }
 
         self.process = process
-        self.stdoutHandle = stdout.fileHandleForReading
-        self.stderrHandle = stderr.fileHandleForReading
-        self.outputCoalescer = outputCoalescer
-
+        self.outputTail = tail
         try process.run()
     }
 
@@ -92,7 +84,7 @@ final class RcloneRunner {
         process.terminate()
     }
 
-    func makeArguments(task: TransferTask, logFile: String, dryRun: Bool) -> [String] {
+    func makeArguments(task: TransferTask, logFile: String, dryRun: Bool, streamLocalCopies: Bool = false) -> [String] {
         var arguments = [
             "copy",
             task.sourcePath,
@@ -103,8 +95,19 @@ final class RcloneRunner {
             arguments.append("--dry-run")
         }
 
+        if task.checkFirst {
+            arguments.append("--check-first")
+        }
+
+        if streamLocalCopies {
+            // Stream bytes through rclone instead of an OS-level file copy, so progress is
+            // counted per byte (not per finished file) and no clone/copyfile cache is involved.
+            arguments.append("--local-no-clone")
+        }
+
         arguments.append(contentsOf: [
-            "--stats", "2s",
+            // Periodic stats in the log file are for the record only; the UI polls rc.
+            "--stats", "30s",
             "--stats-log-level", "NOTICE",
             "--transfers", "\(task.transfers)",
             "--checkers", "\(task.checkers)",
@@ -125,59 +128,61 @@ final class RcloneRunner {
     }
 
     func makeCheckArguments(task: TransferTask, logFile: String) -> [String] {
-        [
+        var arguments = [
             "check",
             task.sourcePath,
             task.resolvedTargetPath,
             "--size-only",
             "--one-way",
+            "--checkers", "\(task.checkers)"
+        ]
+        for exclude in task.excludes {
+            arguments.append(contentsOf: ["--exclude", exclude])
+        }
+        arguments.append(contentsOf: [
             "--log-file", logFile,
             "--log-level", "INFO"
-        ]
+        ])
+        return arguments
+    }
+
+    /// rclone exit codes, see https://rclone.org/docs/#exit-code
+    static func describe(exitCode: Int32) -> String {
+        switch exitCode {
+        case 0: "成功"
+        case 1: "参数或命令错误"
+        case 2: "发生错误（详见日志）"
+        case 3: "找不到目录"
+        case 4: "找不到文件"
+        case 5: "临时错误，可以重试（例如网络中断）"
+        case 6: "部分文件出错，其余已完成"
+        case 7: "致命错误（例如磁盘已满或权限不足）"
+        case 8: "超出传输限制"
+        case 9: "没有需要传输的文件"
+        case 15: "已被中止"
+        default: "退出码 \(exitCode)"
+        }
     }
 }
 
-private final class OutputCoalescer {
+/// Keeps the last few KB of rclone's console output without ever touching the main thread.
+private final class OutputTail: @unchecked Sendable {
     private let lock = NSLock()
-    private let interval: TimeInterval
-    private let maxPendingCharacters = 40_000
-    private var pending = ""
-    private var flushScheduled = false
-    private let onOutput: @Sendable (String) -> Void
+    private var buffer = Data()
+    private let limit = 8 * 1_024
 
-    init(interval: TimeInterval, onOutput: @escaping @Sendable (String) -> Void) {
-        self.interval = interval
-        self.onOutput = onOutput
-    }
-
-    func append(_ text: String) {
+    func append(_ data: Data) {
         lock.lock()
-        pending.append(text)
-        if pending.count > maxPendingCharacters {
-            pending.removeFirst(pending.count - maxPendingCharacters)
-        }
-        let shouldSchedule = !flushScheduled
-        if shouldSchedule {
-            flushScheduled = true
+        buffer.append(data)
+        if buffer.count > limit {
+            buffer.removeFirst(buffer.count - limit)
         }
         lock.unlock()
-
-        guard shouldSchedule else { return }
-
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + interval) { [weak self] in
-            self?.flush()
-        }
     }
 
-    func flush() {
+    var text: String {
         lock.lock()
-        let text = pending
-        pending = ""
-        flushScheduled = false
-        lock.unlock()
-
-        guard !text.isEmpty else { return }
-
-        onOutput(text)
+        defer { lock.unlock() }
+        return String(decoding: buffer, as: UTF8.self)
     }
 }

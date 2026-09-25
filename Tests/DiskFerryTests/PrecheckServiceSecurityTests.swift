@@ -22,6 +22,8 @@ final class PrecheckServiceSecurityTests: XCTestCase {
         var task = TransferTask.empty
         task.sourcePath = source.path
         task.targetPath = target.path
+        // Logs then live directly in the selected target, next to the planted symlink.
+        task.targetLayout = .merge
 
         let result = PrecheckService().run(task: task, rclonePath: "/usr/bin/true")
 
@@ -29,6 +31,27 @@ final class PrecheckServiceSecurityTests: XCTestCase {
         XCTAssertTrue(result.items.contains {
             $0.title == "目标路径安全检查" && $0.severity == .error
         })
+    }
+
+    func testPrecheckRejectsTargetInsideSourceWithoutWritingIntoSource() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let source = root.appendingPathComponent("Photos", isDirectory: true)
+        let nested = source.appendingPathComponent("backup", isDirectory: true)
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        var task = TransferTask.empty
+        task.sourcePath = source.path
+        task.targetPath = nested.path
+        task.targetLayout = .intoFolder
+
+        let result = PrecheckService().run(task: task, rclonePath: "/usr/bin/true")
+
+        XCTAssertTrue(result.hasErrors)
+        XCTAssertTrue(result.items.contains { $0.title == "路径检查" && $0.severity == .error })
+        let nestedEntries = try FileManager.default.contentsOfDirectory(atPath: nested.path)
+        XCTAssertTrue(nestedEntries.isEmpty, "precheck must not create folders inside the source")
     }
 
     func testDestinationSnapshotDetectsDirectoryReplacement() throws {

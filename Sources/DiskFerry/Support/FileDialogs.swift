@@ -1,7 +1,7 @@
 import AppKit
 
 enum FileDialogs {
-    static func chooseFolder(startingAt path: String? = nil, canCreateDirectories: Bool = false) -> String? {
+    static func chooseFolder(startingAt path: String? = nil, canCreateDirectories: Bool = false, message: String? = nil) -> String? {
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
@@ -9,6 +9,7 @@ enum FileDialogs {
         panel.canCreateDirectories = canCreateDirectories
         panel.prompt = "选择"
         panel.treatsFilePackagesAsDirectories = false
+        panel.message = message ?? ""
 
         if let path, !path.isEmpty {
             var isDirectory: ObjCBool = false
