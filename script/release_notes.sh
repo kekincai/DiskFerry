@@ -9,7 +9,8 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 section() {
   awk -v heading="## $1" '
-    $0 == heading { found = 1; next }
+    # "## 0.2.0" or "## 0.2.0 - 2026-09-25"
+    !found && ($0 == heading || index($0, heading " ") == 1) { found = 1; next }
     found && /^## / { exit }
     found { print }
   ' "$ROOT_DIR/CHANGELOG.md"
