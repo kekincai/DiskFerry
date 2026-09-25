@@ -7,14 +7,6 @@ enum HeatmapScanner {
     private static let rootPathByteBudget = 2 * 1_024 * 1_024
     private static let childPathByteBudget = 1 * 1_024 * 1_024
 
-    static func aggregateTargetSummary(from items: [FolderHeatmapItem]) -> SourceSummary {
-        SourceSummary(
-            fileCount: items.reduce(0) { $0 + $1.targetFiles },
-            folderCount: items.reduce(0) { $0 + $1.targetFolders },
-            totalBytes: items.reduce(0) { $0 + $1.targetBytes }
-        )
-    }
-
     static func scan(sourcePath: String, targetPath: String, excludes: [String], limit: Int = 240) -> [FolderHeatmapItem] {
         let sourceURL = URL(fileURLWithPath: sourcePath, isDirectory: true)
         let targetURL = URL(fileURLWithPath: targetPath, isDirectory: true)

@@ -13,7 +13,10 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "DiskFerry",
-            path: "Sources/DiskFerry"
+            path: "Sources/DiskFerry",
+            linkerSettings: [
+                .linkedFramework("NetFS")
+            ]
         ),
         .testTarget(
             name: "DiskFerryTests",

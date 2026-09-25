@@ -32,11 +32,27 @@ struct PrecheckService {
         ))
 
         let resolvedTargetPath = task.resolvedTargetPath
-        var safeLogDirectory: String?
-        if !task.targetPath.isEmpty {
+        // Checked before DestinationPathPolicy.prepare, which creates folders.
+        var hasPathConflict = false
+        if !task.sourcePath.isEmpty, !resolvedTargetPath.isEmpty {
+            let source = URL(fileURLWithPath: task.sourcePath).standardizedFileURL.path
+            let target = URL(fileURLWithPath: resolvedTargetPath).standardizedFileURL.path
+            if source == target {
+                hasPathConflict = true
+                items.append(.init(title: "路径检查", message: "源目录和目标目录不能相同。", severity: .error))
+            } else if PathInspector.isSameOrInside(target, source) {
+                hasPathConflict = true
+                items.append(.init(
+                    title: "路径检查",
+                    message: "目标位于源文件夹内部，复制会把自己复制进自己。请换一个目标。",
+                    severity: .error
+                ))
+            }
+        }
+
+        if !task.targetPath.isEmpty, !hasPathConflict {
             do {
                 let destination = try DestinationPathPolicy.prepare(task: task)
-                safeLogDirectory = destination.logDirectory.path
                 try DestinationPathPolicy.validate(destination)
                 items.append(contentsOf: writeProbe(path: destination.selectedRoot.path))
                 try DestinationPathPolicy.validate(destination)
@@ -49,7 +65,7 @@ struct PrecheckService {
                 }
                 items.append(.init(
                     title: "目标路径安全检查",
-                    message: "目标和日志目录位于所选目录内，且不包含符号链接。",
+                    message: "写入位置位于所选目录内，且不包含符号链接。",
                     severity: .ok
                 ))
             } catch {
@@ -61,22 +77,12 @@ struct PrecheckService {
             }
         }
 
-        if !task.sourcePath.isEmpty,
-           !resolvedTargetPath.isEmpty,
-           URL(fileURLWithPath: task.sourcePath).standardizedFileURL == URL(fileURLWithPath: resolvedTargetPath).standardizedFileURL {
-            items.append(.init(title: "路径检查", message: "源目录和目标目录不能相同。", severity: .error))
-        }
-
         if !task.targetPath.isEmpty, task.targetPath.hasPrefix("/Volumes/") {
             items.append(.init(
                 title: "SMB / 外置盘提醒",
                 message: "目标位于 /Volumes/。如果复制中断，请先确认挂载没有断开。",
                 severity: .warning
             ))
-        }
-
-        if let safeLogDirectory {
-            items.append(.init(title: "日志目录", message: "可创建或已存在：\(safeLogDirectory)", severity: .ok))
         }
 
         return PrecheckResult(items: items)
