@@ -6,19 +6,16 @@ struct TransferTask: Codable, Identifiable, Equatable {
     var name: String
     var sourcePath: String
     var targetPath: String
-    var engine: String
     var mode: CopyMode
     var transfers: Int
     var checkers: Int
     var retries: Int
     var lowLevelRetries: Int
     var excludes: [String]
-    var verifyMode: VerifyMode
     var verifyAfterCopy: Bool
     var targetLayout: TargetLayout
     var checkFirst: Bool
     var isPinned: Bool
-    var createdAt: Date
     var lastRun: RunRecord?
 
     static let defaultExcludes = [
@@ -36,19 +33,16 @@ struct TransferTask: Codable, Identifiable, Equatable {
             name: "",
             sourcePath: "",
             targetPath: "",
-            engine: "rclone",
             mode: .conservative,
             transfers: 1,
             checkers: 2,
             retries: 10,
             lowLevelRetries: 20,
             excludes: TransferTask.defaultExcludes,
-            verifyMode: .sizeOnly,
             verifyAfterCopy: false,
             targetLayout: .intoFolder,
             checkFirst: true,
             isPinned: false,
-            createdAt: Date(),
             lastRun: nil
         )
     }
@@ -58,48 +52,43 @@ struct TransferTask: Codable, Identifiable, Equatable {
         name: String,
         sourcePath: String,
         targetPath: String,
-        engine: String,
         mode: CopyMode,
         transfers: Int,
         checkers: Int,
         retries: Int,
         lowLevelRetries: Int,
         excludes: [String],
-        verifyMode: VerifyMode,
         verifyAfterCopy: Bool,
         targetLayout: TargetLayout,
         checkFirst: Bool,
         isPinned: Bool,
-        createdAt: Date,
         lastRun: RunRecord?
     ) {
         self.id = id
         self.name = name
         self.sourcePath = sourcePath
         self.targetPath = targetPath
-        self.engine = engine
         self.mode = mode
         self.transfers = transfers
         self.checkers = checkers
         self.retries = retries
         self.lowLevelRetries = lowLevelRetries
         self.excludes = excludes
-        self.verifyMode = verifyMode
         self.verifyAfterCopy = verifyAfterCopy
         self.targetLayout = targetLayout
         self.checkFirst = checkFirst
         self.isPinned = isPinned
-        self.createdAt = createdAt
         self.lastRun = lastRun
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, sourcePath, targetPath, engine, mode, transfers, checkers
-        case retries, lowLevelRetries, excludes, verifyMode, verifyAfterCopy, targetLayout
-        case checkFirst, isPinned, createdAt, lastRun
+        case id, name, sourcePath, targetPath, mode, transfers, checkers
+        case retries, lowLevelRetries, excludes, verifyAfterCopy, targetLayout
+        case checkFirst, isPinned, lastRun
     }
 
-    /// Tolerates task files written by older versions, which had no layout, pin or run fields.
+    /// Tolerates task files written by older versions, which had no layout, pin or run fields
+    /// and carried since-removed keys (`engine`, `verifyMode`, `createdAt`, …) that are ignored.
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let fallback = TransferTask.empty
@@ -107,18 +96,15 @@ struct TransferTask: Codable, Identifiable, Equatable {
         name = try container.decodeIfPresent(String.self, forKey: .name) ?? ""
         sourcePath = try container.decodeIfPresent(String.self, forKey: .sourcePath) ?? ""
         targetPath = try container.decodeIfPresent(String.self, forKey: .targetPath) ?? ""
-        engine = try container.decodeIfPresent(String.self, forKey: .engine) ?? fallback.engine
         mode = try container.decodeIfPresent(CopyMode.self, forKey: .mode) ?? fallback.mode
         transfers = try container.decodeIfPresent(Int.self, forKey: .transfers) ?? fallback.transfers
         checkers = try container.decodeIfPresent(Int.self, forKey: .checkers) ?? fallback.checkers
         retries = try container.decodeIfPresent(Int.self, forKey: .retries) ?? fallback.retries
         lowLevelRetries = try container.decodeIfPresent(Int.self, forKey: .lowLevelRetries) ?? fallback.lowLevelRetries
         excludes = try container.decodeIfPresent([String].self, forKey: .excludes) ?? fallback.excludes
-        verifyMode = try container.decodeIfPresent(VerifyMode.self, forKey: .verifyMode) ?? fallback.verifyMode
         verifyAfterCopy = try container.decodeIfPresent(Bool.self, forKey: .verifyAfterCopy) ?? false
         checkFirst = try container.decodeIfPresent(Bool.self, forKey: .checkFirst) ?? true
         isPinned = try container.decodeIfPresent(Bool.self, forKey: .isPinned) ?? false
-        createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
         lastRun = try container.decodeIfPresent(RunRecord.self, forKey: .lastRun)
 
         if let layout = try container.decodeIfPresent(TargetLayout.self, forKey: .targetLayout) {
@@ -228,10 +214,6 @@ enum CopyMode: String, Codable, CaseIterable, Identifiable {
     }
 }
 
-enum VerifyMode: String, Codable {
-    case sizeOnly = "size-only"
-}
-
 /// Outcome of the last run of a route, shown in the sidebar.
 struct RunRecord: Codable, Equatable {
     var finishedAt: Date
@@ -257,9 +239,5 @@ enum RunOutcome: String, Codable {
         case .cancelled: "已中断"
         case .failed: "失败"
         }
-    }
-
-    var isSuccess: Bool {
-        self == .completed || self == .verified || self == .dryRun
     }
 }

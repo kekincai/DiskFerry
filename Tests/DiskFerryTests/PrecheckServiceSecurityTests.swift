@@ -100,6 +100,94 @@ final class PrecheckServiceSecurityTests: XCTestCase {
         XCTAssertTrue(outsideEntries.isEmpty)
     }
 
+    func testDryRunPrecheckWritesNothingToDestination() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let source = root.appendingPathComponent("Photos", isDirectory: true)
+        let target = root.appendingPathComponent("target", isDirectory: true)
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        var task = TransferTask.empty
+        task.sourcePath = source.path
+        task.targetPath = target.path
+        task.targetLayout = .intoFolder
+
+        let result = PrecheckService().run(task: task, rclonePath: "/usr/bin/true", dryRun: true)
+
+        XCTAssertFalse(result.hasErrors, result.items.map(\.message).joined(separator: "\n"))
+        XCTAssertNil(result.destination)
+        XCTAssertTrue(
+            try FileManager.default.contentsOfDirectory(atPath: target.path).isEmpty,
+            "a dry run must not create the destination folder or a write-test file"
+        )
+    }
+
+    func testDryRunPrecheckStillRejectsSymlinkedDestination() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let source = root.appendingPathComponent("Photos", isDirectory: true)
+        let target = root.appendingPathComponent("target", isDirectory: true)
+        let outside = root.appendingPathComponent("outside", isDirectory: true)
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: target.appendingPathComponent("Photos"), withDestinationURL: outside)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        var task = TransferTask.empty
+        task.sourcePath = source.path
+        task.targetPath = target.path
+        task.targetLayout = .intoFolder
+
+        let result = PrecheckService().run(task: task, rclonePath: "/usr/bin/true", dryRun: true)
+        XCTAssertTrue(result.items.contains { $0.title == "目标路径安全检查" && $0.severity == .error })
+    }
+
+    func testPrecheckRejectsTargetInsideSourceThroughSymlink() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let source = root.appendingPathComponent("Photos", isDirectory: true)
+        try FileManager.default.createDirectory(at: source.appendingPathComponent("backup"), withIntermediateDirectories: true)
+        let alias = root.appendingPathComponent("alias", isDirectory: true)
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: source)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        var task = TransferTask.empty
+        task.sourcePath = source.path
+        task.targetPath = alias.appendingPathComponent("backup").path
+        task.targetLayout = .merge
+
+        let result = PrecheckService().run(task: task, rclonePath: "/usr/bin/true")
+        XCTAssertTrue(result.items.contains { $0.title == "路径检查" && $0.severity == .error })
+        XCTAssertNil(result.destination)
+    }
+
+    func testPrecheckRejectsTargetInsideSourceWithDifferentCase() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let source = root.appendingPathComponent("Photos", isDirectory: true)
+        try FileManager.default.createDirectory(at: source.appendingPathComponent("backup"), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let caseSensitive = try root.resourceValues(forKeys: [.volumeSupportsCaseSensitiveNamesKey])
+            .volumeSupportsCaseSensitiveNames ?? true
+        if caseSensitive {
+            throw XCTSkip("temporary directory is on a case-sensitive volume")
+        }
+
+        var task = TransferTask.empty
+        task.sourcePath = source.path
+        task.targetPath = root.appendingPathComponent("PHOTOS/backup").path
+        task.targetLayout = .merge
+
+        XCTAssertFalse(PathInspector.isSameOrInside(task.targetPath, task.sourcePath), "plain string check differs by case")
+        let result = PrecheckService().run(task: task, rclonePath: "/usr/bin/true")
+        XCTAssertTrue(result.items.contains { $0.title == "路径检查" && $0.severity == .error })
+        let entries = try FileManager.default.contentsOfDirectory(atPath: source.appendingPathComponent("backup").path)
+        XCTAssertTrue(entries.isEmpty, "precheck must not create folders inside the source")
+    }
+
     func testOrdinaryDestinationPassesWithoutWritingLogs() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)

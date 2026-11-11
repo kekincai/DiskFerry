@@ -57,14 +57,16 @@ final class TransferStore: ObservableObject {
     @Published private(set) var inputErrors: [LocationRole: String] = [:]
     @Published private(set) var mountingRole: LocationRole?
 
-    // Directory comparison (manual).
-    @Published private(set) var heatmapItems: [FolderHeatmapItem] = []
-    @Published private(set) var lastHeatmapRefresh: Date?
-    @Published private(set) var isRefreshingHeatmap = false
-
+    /// Set from Settings when the user commits a path, not on every keystroke.
     @Published var rclonePath: String {
-        didSet { UserDefaults.standard.set(rclonePath, forKey: Self.rclonePathKey) }
+        didSet {
+            guard rclonePath != oldValue else { return }
+            UserDefaults.standard.set(rclonePath, forKey: Self.rclonePathKey)
+            refreshRcloneCapabilities()
+        }
     }
+    /// Whether the configured rclone understands `--local-no-clone`; probed off the main thread.
+    @Published private(set) var rcloneSupportsLocalNoClone = false
 
     let monitor = TransferMonitor()
 
@@ -73,7 +75,6 @@ final class TransferStore: ObservableObject {
     private let storage = TaskStorage()
     private var isStopping = false
     private var pollTask: Task<Void, Never>?
-    private var heatmapTask: Task<Void, Never>?
     private var locationTasks: [LocationRole: Task<Void, Never>] = [:]
     private var activeDestinationSnapshot: DestinationPathPolicy.Snapshot?
     private var copyProgress: TransferProgress?
@@ -83,20 +84,22 @@ final class TransferStore: ObservableObject {
     init() {
         let saved = storage.loadRecentTasks()
         self.routes = saved
-        self.task = saved.first(where: { !$0.isPinned }) ?? saved.first ?? .empty
+        // `saveRun` keeps the most recently run route first, pinned or not.
+        self.task = saved.first ?? .empty
         let storedPath = UserDefaults.standard.string(forKey: Self.rclonePathKey) ?? ""
         self.rclonePath = storedPath.isEmpty ? (RcloneLocator.locate(preferredPath: nil) ?? "") : storedPath
         if task.isReady {
             headline = "已载入上次的路线。"
         }
         applyLaunchArguments()
+        refreshRcloneCapabilities()
         refreshLocationStatus(.source)
         refreshLocationStatus(.target)
         refreshMountedVolumes()
         observeMounts()
     }
 
-    /// `open -a DiskFerry --args -source /path -target /path [-autostart YES]`
+    /// `open -b com.local.DiskFerry --args -source /path -target /path [-autostart YES]`
     /// for scripts and Shortcuts. Read from the argument domain only, never persisted.
     private func applyLaunchArguments() {
         let arguments = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)
@@ -194,12 +197,18 @@ final class TransferStore: ObservableObject {
     func choose(_ role: LocationRole) {
         guard canEdit else { return }
         let current = path(for: role)
-        guard let path = FileDialogs.chooseFolder(
-            startingAt: current,
-            canCreateDirectories: role == .target,
-            message: role == .source ? "选择要复制的文件夹" : "选择复制到哪里"
-        ) else { return }
-        setPath(path, for: role)
+        Task {
+            // Looking at the current folder can stall on a dropped share.
+            let directory = await Task.detached(priority: .userInitiated) {
+                FileDialogs.startingDirectory(for: current)
+            }.value
+            guard let path = FileDialogs.chooseFolder(
+                startingAt: directory,
+                canCreateDirectories: role == .target,
+                message: role == .source ? "选择要复制的文件夹" : "选择复制到哪里"
+            ) else { return }
+            setPath(path, for: role)
+        }
     }
 
     /// Accepts a pasted or typed path, including smb:// and \\server\share forms.
@@ -333,6 +342,16 @@ final class TransferStore: ObservableObject {
         route.id == task.id && route.hasSameRoute(as: task)
     }
 
+    /// The saved route the editor is showing, if the draft still matches it.
+    var currentRoute: TransferTask? {
+        routes.first(where: isCurrent)
+    }
+
+    /// Pin state shown in the toolbar; read from the saved route, never the draft.
+    var isCurrentRoutePinned: Bool {
+        currentRoute?.isPinned == true
+    }
+
     // MARK: - Running
 
     func startCopy() {
@@ -376,7 +395,7 @@ final class TransferStore: ObservableObject {
         let preferredRclone = rclonePath
         Task {
             let preflight = await Task.detached(priority: .userInitiated) {
-                Preflight.run(task: snapshotTask, rclonePath: preferredRclone)
+                Preflight.run(task: snapshotTask, rclonePath: preferredRclone, dryRun: dryRun)
             }.value
 
             precheckItems = preflight.items
@@ -387,19 +406,21 @@ final class TransferStore: ObservableObject {
                 failureDetails = preflight.items.filter { $0.severity == .error }.map(\.message)
             case let .ready(rclone, snapshot, streamLocalCopies):
                 if rclone != rclonePath { rclonePath = rclone }
+                // The destination was re-validated as the last step of the preflight,
+                // so rclone starts one main-actor hop after that check.
                 launch(dryRun: dryRun, rclone: rclone, snapshot: snapshot, streamLocalCopies: streamLocalCopies)
             }
         }
     }
 
-    private func launch(dryRun: Bool, rclone: String, snapshot: DestinationPathPolicy.Snapshot, streamLocalCopies: Bool) {
+    /// `snapshot` is nil for dry runs, which create nothing on the destination.
+    private func launch(dryRun: Bool, rclone: String, snapshot: DestinationPathPolicy.Snapshot?, streamLocalCopies: Bool) {
         startedAt = Date()
         finishedAt = nil
         isStopping = false
         activeDestinationSnapshot = snapshot
 
         do {
-            try DestinationPathPolicy.validate(snapshot)
             let remote = try RcloneRemoteControl.makeLocal()
             try runner.start(
                 rclonePath: rclone,
@@ -463,21 +484,47 @@ final class TransferStore: ObservableObject {
     }
 
     private func startVerification() {
-        do {
-            guard let activeDestinationSnapshot else {
-                throw DestinationPathPolicy.PolicyError.emptyPath
+        status = .verifying
+        headline = "复制完成，正在准备校验…"
+        let snapshot = activeDestinationSnapshot
+        let preferredRclone = rclonePath
+        Task {
+            // Both checks touch the filesystem (the destination may be a stalled share).
+            let prepared = await Task.detached(priority: .userInitiated) { () -> Result<String, VerificationSetupError> in
+                do {
+                    guard let snapshot else { throw DestinationPathPolicy.PolicyError.emptyPath }
+                    try DestinationPathPolicy.validate(snapshot)
+                } catch {
+                    return .failure(.unsafeDestination(error.localizedDescription))
+                }
+                guard let rclone = RcloneLocator.locate(preferredPath: preferredRclone) else {
+                    return .failure(.missingRclone)
+                }
+                return .success(rclone)
+            }.value
+
+            if isStopping {
+                monitor.restore(copyProgress)
+                complete(outcome: .completed, headline: "校验已中断。复制本身已经完成。")
+                return
             }
-            try DestinationPathPolicy.validate(activeDestinationSnapshot)
-        } catch {
-            complete(outcome: .failed, headline: "复制完成，但目标路径安全检查失败：\(error.localizedDescription)")
-            return
+            switch prepared {
+            case let .failure(.unsafeDestination(message)):
+                complete(outcome: .failed, headline: "复制完成，但目标路径安全检查失败：\(message)")
+            case .failure(.missingRclone):
+                complete(outcome: .failed, headline: "复制完成，但找不到 rclone，无法校验。")
+            case let .success(rclone):
+                launchVerification(rclone: rclone)
+            }
         }
+    }
 
-        guard let rclone = RcloneLocator.locate(preferredPath: rclonePath) else {
-            complete(outcome: .failed, headline: "复制完成，但找不到 rclone，无法校验。")
-            return
-        }
+    private enum VerificationSetupError: Error {
+        case unsafeDestination(String)
+        case missingRclone
+    }
 
+    private func launchVerification(rclone: String) {
         do {
             let remote = try RcloneRemoteControl.makeLocal()
             try runner.startCheck(
@@ -488,7 +535,6 @@ final class TransferStore: ObservableObject {
                     self?.finishVerification(exitCode: exitCode, output: output)
                 }
             )
-            status = .verifying
             headline = "复制完成，正在按文件大小校验…"
             monitor.reset()
             startPolling(remote: remote, verifying: true)
@@ -502,19 +548,24 @@ final class TransferStore: ObservableObject {
         applyFinalStats(from: output, verifying: true)
         finishedAt = Date()
 
+        // The check's own stats have no bytes or transfers. Unless it found a problem
+        // worth showing, put the copy's numbers back in the metrics.
         if isStopping {
-            monitor.markStopped()
+            monitor.restore(copyProgress)
             complete(outcome: .completed, headline: "校验已中断。复制本身已经完成。")
             return
         }
 
         if exitCode == 0 {
-            monitor.markSucceeded()
+            monitor.restore(copyProgress)
             complete(outcome: .verified, headline: "复制完成，校验通过：所有文件大小一致。")
         } else {
             monitor.markStopped()
             recordFailure(output: output)
-            complete(outcome: .failed, headline: "复制完成，但校验发现差异。")
+            let headline = RcloneOutput.reportsDifferences(output)
+                ? "复制完成，但校验发现差异。"
+                : "复制完成，但校验没能完成：\(RcloneRunner.describe(exitCode: exitCode))"
+            complete(outcome: .failed, headline: headline)
         }
     }
 
@@ -565,8 +616,6 @@ final class TransferStore: ObservableObject {
         lastResult = nil
         startedAt = nil
         finishedAt = nil
-        heatmapItems = []
-        lastHeatmapRefresh = nil
         monitor.reset()
     }
 
@@ -620,6 +669,14 @@ final class TransferStore: ObservableObject {
     // MARK: - Locations
 
     private func taskDidChange(from old: TransferTask) {
+        // Editing the paths or layout of a loaded route turns it into a new draft: it must
+        // not keep the old route's pin or custom name. (Assigning inside didSet does not
+        // re-enter it.)
+        if old.id == task.id, !old.hasSameRoute(as: task), (task.isPinned || !task.name.isEmpty),
+           routes.first(where: { $0.id == task.id })?.hasSameRoute(as: task) != true {
+            task.isPinned = false
+            task.name = ""
+        }
         if old.sourcePath != task.sourcePath {
             refreshLocationStatus(.source)
         }
@@ -715,38 +772,19 @@ final class TransferStore: ObservableObject {
 
     func revealInFinder(_ role: LocationRole) {
         let path = role == .source ? task.sourcePath : task.resolvedTargetPath
+        let fallback = task.targetPath
         guard !path.isEmpty else { return }
-        let url = URL(fileURLWithPath: path, isDirectory: true)
-        if FileManager.default.fileExists(atPath: path) {
-            NSWorkspace.shared.open(url)
-        } else {
-            NSWorkspace.shared.open(URL(fileURLWithPath: task.targetPath, isDirectory: true))
+        Task {
+            let exists = await Task.detached(priority: .userInitiated) {
+                FileManager.default.fileExists(atPath: path)
+            }.value
+            NSWorkspace.shared.open(URL(fileURLWithPath: exists ? path : fallback, isDirectory: true))
         }
     }
 
     func copyPathToClipboard(_ path: String) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(path, forType: .string)
-    }
-
-    // MARK: - Directory comparison
-
-    func refreshHeatmapOnce() {
-        guard task.isReady else { return }
-        let sourcePath = task.sourcePath
-        let targetPath = task.resolvedTargetPath
-        let excludes = task.excludes
-        heatmapTask?.cancel()
-        isRefreshingHeatmap = true
-        heatmapTask = Task {
-            let heatmap = await Task.detached(priority: .utility) {
-                HeatmapScanner.scan(sourcePath: sourcePath, targetPath: targetPath, excludes: excludes, limit: 120)
-            }.value
-            guard !Task.isCancelled else { return }
-            heatmapItems = heatmap
-            lastHeatmapRefresh = Date()
-            isRefreshingHeatmap = false
-        }
     }
 
     // MARK: - Persistence
@@ -778,7 +816,6 @@ final class TransferStore: ObservableObject {
         }
         var route = draft
         route.id = UUID().uuidString
-        route.createdAt = Date()
         route.isPinned = false
         route.lastRun = nil
         routes.insert(route, at: 0)
@@ -788,6 +825,20 @@ final class TransferStore: ObservableObject {
     private func persistRoutes() {
         routes = TaskStorage.trimmed(routes)
         storage.saveRecentTasks(routes)
+    }
+
+    // MARK: - rclone
+
+    private func refreshRcloneCapabilities() {
+        let path = rclonePath
+        Task {
+            let supported = await Task.detached(priority: .utility) { () -> Bool in
+                guard let rclone = RcloneLocator.locate(preferredPath: path) else { return false }
+                return RcloneCapabilities.supportsLocalNoClone(rclonePath: rclone)
+            }.value
+            guard path == rclonePath else { return }
+            if rcloneSupportsLocalNoClone != supported { rcloneSupportsLocalNoClone = supported }
+        }
     }
 
     // MARK: - System integration
@@ -833,7 +884,8 @@ final class TransferStore: ObservableObject {
 private enum Preflight {
     enum Outcome {
         case blocked(String)
-        case ready(rclone: String, snapshot: DestinationPathPolicy.Snapshot, streamLocalCopies: Bool)
+        /// `snapshot` is nil for dry runs.
+        case ready(rclone: String, snapshot: DestinationPathPolicy.Snapshot?, streamLocalCopies: Bool)
     }
 
     struct Result {
@@ -841,24 +893,29 @@ private enum Preflight {
         var outcome: Outcome
     }
 
-    static func run(task: TransferTask, rclonePath: String) -> Result {
-        let precheck = PrecheckService().run(task: task, rclonePath: rclonePath)
+    static func run(task: TransferTask, rclonePath: String, dryRun: Bool) -> Result {
+        let precheck = PrecheckService().run(task: task, rclonePath: rclonePath, dryRun: dryRun)
         guard !precheck.hasErrors else {
             return Result(items: precheck.items, outcome: .blocked("检查未通过，请先处理下面的问题。"))
         }
-        guard let rclone = RcloneLocator.locate(preferredPath: rclonePath) else {
+        guard let rclone = precheck.rclonePath else {
             return Result(items: precheck.items, outcome: .blocked("没有找到 rclone。请先安装：brew install rclone"))
         }
+        let streamLocalCopies = RcloneCapabilities.supportsLocalNoClone(rclonePath: rclone)
+
+        guard !dryRun else {
+            return Result(items: precheck.items, outcome: .ready(rclone: rclone, snapshot: nil, streamLocalCopies: streamLocalCopies))
+        }
+        guard let snapshot = precheck.destination else {
+            return Result(items: precheck.items, outcome: .blocked("目标路径安全检查失败。"))
+        }
         do {
-            let snapshot = try DestinationPathPolicy.prepare(task: task)
+            // Last step before rclone starts: the destination must still be the folder
+            // that was checked (no swap for a symlink while the capability probe ran).
             try DestinationPathPolicy.validate(snapshot)
             return Result(
                 items: precheck.items,
-                outcome: .ready(
-                    rclone: rclone,
-                    snapshot: snapshot,
-                    streamLocalCopies: RcloneCapabilities.supportsLocalNoClone(rclonePath: rclone)
-                )
+                outcome: .ready(rclone: rclone, snapshot: snapshot, streamLocalCopies: streamLocalCopies)
             )
         } catch {
             return Result(items: precheck.items, outcome: .blocked("目标路径安全检查失败：\(error.localizedDescription)"))

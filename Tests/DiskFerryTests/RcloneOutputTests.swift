@@ -40,6 +40,20 @@ final class RcloneOutputTests: XCTestCase {
         XCTAssertNil(RcloneOutput.finalStats(text))
     }
 
+    func testCheckDifferencesAreRecognized() {
+        // Captured from rclone 1.76 `check --size-only --one-way` with a missing file.
+        let differences = """
+        {"time":"2026-11-11T09:20:03.405118+09:00","level":"error","msg":"file not in Local file system at /tmp/b","object":"x","objectType":"*local.Object","source":"operations/check.go:108"}
+        {"time":"2026-11-11T09:20:03.406878+09:00","level":"notice","msg":"1 files missing","object":"Local file system at /tmp/b","objectType":"*local.Fs","source":"operations/check.go:242"}
+        {"time":"2026-11-11T09:20:03.407149+09:00","level":"notice","msg":"1 differences found","object":"Local file system at /tmp/b","objectType":"*local.Fs","source":"operations/check.go:252"}
+        {"time":"2026-11-11T09:20:03.407458+09:00","level":"notice","msg":"Failed to check: 1 differences found","source":"cmd/cmd.go:334"}
+        """
+        XCTAssertTrue(RcloneOutput.reportsDifferences(differences))
+        XCTAssertFalse(RcloneOutput.reportsDifferences(jsonSample))
+        XCTAssertFalse(RcloneOutput.reportsDifferences(#"{"level":"notice","msg":"0 differences found"}"#))
+        XCTAssertFalse(RcloneOutput.reportsDifferences("Error: directory not found\n"))
+    }
+
     func testTruncatedLeadingLineIsIgnored() {
         let text = "ted\",\"level\":\"error\"}\n" + jsonSample
         XCTAssertEqual(RcloneOutput.finalStats(text)?.totalBytes, 6)

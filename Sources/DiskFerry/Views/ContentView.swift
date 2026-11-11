@@ -21,19 +21,17 @@ struct ContentView: View {
             .navigationSubtitle(store.status == .idle ? "" : store.status.label)
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
+                    let isPinned = store.isCurrentRoutePinned
                     Button {
-                        if store.task.isPinned, let route = store.routes.first(where: { store.isCurrent($0) }) {
+                        if isPinned, let route = store.currentRoute {
                             store.togglePin(route)
                         } else {
                             store.pinCurrentRoute()
                         }
                     } label: {
-                        Label(
-                            store.task.isPinned ? "取消收藏" : "收藏路线",
-                            systemImage: store.task.isPinned ? "star.fill" : "star"
-                        )
+                        Label(isPinned ? "取消收藏" : "收藏路线", systemImage: isPinned ? "star.fill" : "star")
                     }
-                    .help(store.task.isPinned ? "从收藏中移除" : "收藏这条路线，下次一键复制")
+                    .help(isPinned ? "从收藏中移除" : "收藏这条路线，下次一键复制")
                     .disabled(!store.task.isReady)
                 }
             }

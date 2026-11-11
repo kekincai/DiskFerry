@@ -93,7 +93,7 @@ private struct AdvancedOptionsView: View {
                 .disabled(!store.task.isReady)
             }
 
-            Text("除了复制的文件，不会在目标或本机写入任何日志。rclone 路径可在“设置”中修改。")
+            Text("预览不含实时统计用的 --rc 参数（每次运行随机生成端口和密码），可以直接在终端运行。除了复制的文件，不会在目标或本机写入任何日志。rclone 路径可在“设置”中修改。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -107,7 +107,7 @@ private struct AdvancedOptionsView: View {
         let arguments = RcloneRunner().makeArguments(
             task: store.task,
             dryRun: false,
-            streamLocalCopies: true
+            streamLocalCopies: store.rcloneSupportsLocalNoClone
         )
         let rclone = store.rclonePath.isEmpty ? "rclone" : store.rclonePath
         return ([rclone] + arguments).map(shellQuote).joined(separator: " ")

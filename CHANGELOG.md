@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+### Removed
+- The folder comparison tab. It scanned only the first level of each folder and compared allocated size, so its percentages were unreliable; all numbers now come from rclone.
+- The precheck warning shown for every destination under `/Volumes/`.
+
+### Fixed
+- Dry runs no longer create the destination folder or a write-test file.
+- With "verify after copying", the copy's numbers stay visible after verification instead of dropping to 0.
+- A verification that could not run (share gone, folder missing) is no longer reported as "differences found".
+- Editing a pinned route's paths no longer leaves the star and the old name attached to the new route.
+- The app reopens the route that ran last, pinned or not.
+- Filesystem checks before a copy, before verification, when opening a folder picker and when revealing the destination no longer run on the main thread.
+- A destination inside the source is also rejected when reached through a symlink or a differently cased path.
+
+### Changed
+- The rc password is passed to rclone through `RCLONE_RC_PASS` instead of the command line.
+- The precheck runs once per start instead of preparing the destination twice.
+- The rclone path in Settings is saved and checked when you press Return, not on every keystroke.
+- The command preview only includes `--local-no-clone` when the installed rclone supports it.
+- `script/build_and_run.sh` refuses to quit the app while it is copying, and its `--telemetry` mode is gone.
+- The app bundle uses the committed `Assets/DiskFerry.icns` instead of regenerating it on every build.
+
 ## 0.2.0 - 2026-09-25
 
 ### Changed

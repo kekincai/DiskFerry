@@ -63,33 +63,51 @@ cd DiskFerry
 ./script/package_release.sh 0.0.0      # universal .dmg / .zip in dist/release/
 ```
 
+## Usage
+
+1. **Set the source** (从): drag the folder onto the left card, or use 选择… (Choose), 粘贴 (Paste) or 输入地址… (Enter address).
+2. **Set the destination** (复制到) the same way. The **⋯** menu lists connected drives and shares, recent locations, and 连接服务器… (Connect to Server).
+3. **Check where files land:** 写入到 (Write to) under the cards is the folder the files end up in.
+4. **Start copying** (⌘R). If unsure, run a **dry run** (预演, ⇧⌘R) first: it only counts what would be copied, writes nothing and does not create the destination folder.
+5. Finished routes appear in the sidebar. Click ☆ to pin one, then select it and click 再次同步 (Sync again) next time.
+
+| Option | What it does |
+| --- | --- |
+| Speed (速度) | Conservative (1 parallel transfer) / Normal (2) / Fast (4) / Custom. Use Conservative for spinning disks and weak Wi‑Fi, Fast for gigabit Ethernet + SSD. |
+| Count first (先统计再复制) | On by default. Compares everything before transferring, so totals and ETA are right from the start. |
+| Verify after copying (复制后校验) | Checks every file's size again; does not read file contents. |
+
 ## How live progress works
 
 Each rclone process starts its remote-control server on `127.0.0.1` with a random password, and Disk Ferry polls `core/stats` once per second. The numbers are rclone's own accounting, not guesses from scanning folders.
 
+The Advanced (高级) panel shows and copies the current route's command, without the per-run `--rc` flags:
+
 ```bash
-rclone copy "$SOURCE" "$TARGET" \
+RCLONE_RC_PASS=<random> rclone copy "$SOURCE" "$TARGET" \
   --check-first --local-no-clone \
   --transfers 1 --checkers 2 --retries 10 --low-level-retries 20 \
   --exclude ".DS_Store" --exclude "._*" --exclude ".Spotlight-V100/**" \
   --exclude ".Trashes/**" --exclude ".fseventsd/**" --exclude ".TemporaryItems/**" \
-  --stats 0 --log-level NOTICE \
-  --rc --rc-addr 127.0.0.1:<random port> --rc-user diskferry --rc-pass <random>
+  --log-level NOTICE --use-json-log --stats 1h --stats-log-level NOTICE --stats-one-line \
+  --rc --rc-addr 127.0.0.1:<random port> --rc-user diskferry
 ```
 
 - `--check-first` compares everything before transferring, so totals and ETA are right from the start.
 - `--local-no-clone` (added when the installed rclone supports it) makes rclone stream bytes itself instead of handing whole files to the OS, so large videos show smooth progress.
+- `--log-level NOTICE --use-json-log --stats 1h …` keeps the console to errors plus one final stats line at exit, so runs that finish before the first poll still get exact numbers.
+- The rc password reaches rclone through the `RCLONE_RC_PASS` environment variable, so other users on the Mac cannot read it with `ps`.
 
 ## Privacy and cache policy
 
 Disk Ferry does not generate thumbnails, preview media, read EXIF, build a media database, hash every file by default, cache file contents, stage data locally, or write log files.
 
-Local state is limited to settings and saved routes (`~/Library/Application Support/DiskFerry/recent_tasks.json`).
+Local state is limited to settings and saved routes (`~/Library/Application Support/DiskFerry/recent_tasks.json`). rclone's output stays in memory and is shown only when a run fails.
 
 ## Scripting
 
 ```bash
-open -a DiskFerry --args -source /Volumes/PhotoDisk/Photos -target /Volumes/NAS -autostart YES
+open -b com.local.DiskFerry --args -source /Volumes/PhotoDisk/Photos -target /Volumes/NAS -autostart YES
 ```
 
 ## Development
@@ -97,6 +115,17 @@ open -a DiskFerry --args -source /Volumes/PhotoDisk/Photos -target /Volumes/NAS 
 ```bash
 swift build
 swift test          # includes an end-to-end copy when rclone is installed
+./script/build_and_run.sh --verify
+```
+
+```text
+Sources/DiskFerry/App       entry point, menus, quit confirmation
+Sources/DiskFerry/Models    route, progress and status models
+Sources/DiskFerry/Services  rclone runner / stats, path parsing and mounting, precheck, safety policy
+Sources/DiskFerry/Stores    app state, live progress, saved routes
+Sources/DiskFerry/Support   formatting and small system helpers
+Sources/DiskFerry/Views     SwiftUI interface
+script/                     build, launch and icon scripts
 ```
 
 Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). Disk Ferry should stay a low-cache copy controller, not a photo manager, file browser or indexer.

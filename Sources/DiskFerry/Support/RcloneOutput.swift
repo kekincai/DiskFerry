@@ -22,6 +22,19 @@ enum RcloneOutput {
         return nil
     }
 
+    /// Did `rclone check` exit because it found mismatched or missing files, rather than
+    /// failing to run (unreachable share, bad flag, …)? rclone logs "N differences found".
+    static func reportsDifferences(_ text: String) -> Bool {
+        text.split(whereSeparator: \.isNewline).contains { line in
+            let message = jsonObject(line)?["msg"] as? String ?? stripTimestamp(String(line))
+            guard let range = message.range(of: #"(\d+) differences found"#, options: .regularExpression) else {
+                return false
+            }
+            let count = message[range].prefix { $0.isNumber }
+            return (Int(count) ?? 0) > 0
+        }
+    }
+
     /// Human-readable lines such as "ERROR : photo.heic: Failed to copy: …".
     static func displayLines(_ text: String) -> [String] {
         text.split(whereSeparator: \.isNewline)

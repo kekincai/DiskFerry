@@ -56,14 +56,6 @@ struct TransferProgress: Equatable {
         }
     }
 
-    var remainingFiles: Int {
-        max(0, totalTransfers - transfers)
-    }
-
-    var remainingBytes: Int64 {
-        max(0, totalBytes - bytes)
-    }
-
     /// Files rclone compared and found already present on the destination.
     var skippedFiles: Int {
         checks
@@ -179,10 +171,4 @@ struct SpeedMeter {
         }
         return Double(last.bytes - first.bytes) / (last.time - first.time)
     }
-}
-
-struct SourceSummary: Equatable {
-    var fileCount: Int
-    var folderCount: Int
-    var totalBytes: Int64
 }

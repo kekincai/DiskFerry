@@ -41,15 +41,10 @@ enum DestinationPathPolicy {
     }
 
     static func prepare(task: TransferTask) throws -> Snapshot {
-        guard !task.targetPath.isEmpty, !task.resolvedTargetPath.isEmpty else {
-            throw PolicyError.emptyPath
-        }
+        let (root, destination) = try urls(for: task)
 
-        let root = standardizedDirectoryURL(path: task.targetPath)
-        let destination = standardizedDirectoryURL(path: task.resolvedTargetPath)
-
-        try ensureDirectory(at: root, within: root, createIfMissing: false)
-        try ensureDirectory(at: destination, within: root, createIfMissing: true)
+        try walk(to: root, within: root, whenMissing: .fail)
+        try walk(to: destination, within: root, whenMissing: .create)
         try verifyCanonicalContainment(candidate: destination, root: root)
 
         return Snapshot(
@@ -58,6 +53,18 @@ enum DestinationPathPolicy {
             selectedRootIdentity: try directoryIdentity(at: root),
             destinationIdentity: try directoryIdentity(at: destination)
         )
+    }
+
+    /// Read-only counterpart of `prepare` for dry runs: the same symlink and containment
+    /// checks, but nothing is created and a missing destination folder is fine.
+    /// Returns whether the destination folder already exists.
+    static func inspect(task: TransferTask) throws -> Bool {
+        let (root, destination) = try urls(for: task)
+
+        try walk(to: root, within: root, whenMissing: .fail)
+        let deepest = try walk(to: destination, within: root, whenMissing: .stop)
+        try verifyCanonicalContainment(candidate: deepest, root: root)
+        return deepest.path == destination.path
     }
 
     static func validate(_ snapshot: Snapshot) throws {
@@ -70,42 +77,64 @@ enum DestinationPathPolicy {
         URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL
     }
 
-    private static func ensureDirectory(at candidate: URL, within root: URL, createIfMissing: Bool) throws {
+    private static func urls(for task: TransferTask) throws -> (root: URL, destination: URL) {
+        guard !task.targetPath.isEmpty, !task.resolvedTargetPath.isEmpty else {
+            throw PolicyError.emptyPath
+        }
+        return (standardizedDirectoryURL(path: task.targetPath), standardizedDirectoryURL(path: task.resolvedTargetPath))
+    }
+
+    private enum MissingAction {
+        /// Throw: the folder must already exist.
+        case fail
+        /// Create it (real copies only).
+        case create
+        /// Stop walking and report the deepest existing folder (dry runs).
+        case stop
+    }
+
+    /// Walks from `root` down to `candidate`, rejecting symlinks and non-directories at
+    /// every step. Returns the deepest directory that exists afterwards.
+    @discardableResult
+    private static func walk(to candidate: URL, within root: URL, whenMissing: MissingAction) throws -> URL {
         guard isContained(candidate, in: root) else {
             throw PolicyError.outsideSelectedRoot(candidate.path)
         }
 
-        let rootComponents = root.pathComponents
-        let candidateComponents = candidate.pathComponents
-        var current = root
-
         if candidate.path == root.path {
             _ = try directoryIdentity(at: root)
-            return
+            return root
         }
 
-        for component in candidateComponents.dropFirst(rootComponents.count) {
-            current.appendPathComponent(component, isDirectory: true)
-            switch try itemKind(at: current) {
+        var current = root
+        for component in candidate.pathComponents.dropFirst(root.pathComponents.count) {
+            let next = current.appendingPathComponent(component, isDirectory: true)
+            switch try itemKind(at: next) {
             case .missing:
-                guard createIfMissing else {
-                    throw PolicyError.notDirectory(current.path)
-                }
-                do {
-                    try FileManager.default.createDirectory(at: current, withIntermediateDirectories: false)
-                } catch {
-                    throw PolicyError.filesystem("无法创建目标目录 \(current.path)：\(error.localizedDescription)")
+                switch whenMissing {
+                case .fail:
+                    throw PolicyError.notDirectory(next.path)
+                case .stop:
+                    return current
+                case .create:
+                    do {
+                        try FileManager.default.createDirectory(at: next, withIntermediateDirectories: false)
+                    } catch {
+                        throw PolicyError.filesystem("无法创建目标目录 \(next.path)：\(error.localizedDescription)")
+                    }
                 }
             case .symbolicLink:
-                throw PolicyError.symbolicLink(current.path)
+                throw PolicyError.symbolicLink(next.path)
             case .directory:
                 break
             case .other:
-                throw PolicyError.notDirectory(current.path)
+                throw PolicyError.notDirectory(next.path)
             }
+            current = next
         }
 
         _ = try directoryIdentity(at: candidate)
+        return candidate
     }
 
     private static func validateDirectory(_ url: URL, expected: DirectoryIdentity) throws {
@@ -161,6 +190,6 @@ enum DestinationPathPolicy {
     }
 
     private static func isContained(_ candidate: URL, in root: URL) -> Bool {
-        candidate.path == root.path || candidate.path.hasPrefix(root.path.hasSuffix("/") ? root.path : root.path + "/")
+        PathInspector.isSameOrInside(candidate.path, root.path)
     }
 }

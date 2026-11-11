@@ -20,8 +20,8 @@ mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources"
 cp "$BINARY" "$CONTENTS/MacOS/$APP_NAME"
 chmod +x "$CONTENTS/MacOS/$APP_NAME"
 
-/usr/bin/swift "$ROOT_DIR/script/generate_app_icon.swift" "$ROOT_DIR"
-cp "$ROOT_DIR/dist/DiskFerry.icns" "$CONTENTS/Resources/DiskFerry.icns"
+# Regenerate with `swift script/generate_app_icon.swift` after changing the design.
+cp "$ROOT_DIR/Assets/DiskFerry.icns" "$CONTENTS/Resources/DiskFerry.icns"
 
 cat >"$CONTENTS/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

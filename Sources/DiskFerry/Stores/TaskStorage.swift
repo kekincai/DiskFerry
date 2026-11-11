@@ -1,7 +1,7 @@
 import Foundation
 
-/// Saved routes live in Application Support. Only small metadata is stored here;
-/// transfer logs always go to the destination.
+/// Saved routes live in Application Support. Only small metadata is stored here; no
+/// logs or reports are written anywhere.
 struct TaskStorage {
     static let recentLimit = 20
 
@@ -30,7 +30,7 @@ struct TaskStorage {
             let data = try JSONCoding.encoder.encode(Self.trimmed(tasks))
             try data.write(to: recentTasksURL, options: .atomic)
         } catch {
-            // Saved routes are a convenience; transfer logging still goes to the target disk.
+            // Saved routes are a convenience; failing to save them must not affect a copy.
         }
     }
 

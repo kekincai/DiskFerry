@@ -55,7 +55,7 @@ struct RunPanelView: View {
             }
             .controlSize(.large)
             .disabled(!store.canStop)
-            .keyboardShortcut(".", modifiers: .command)
+            .help("停止（⌘.）")
         } else {
             Button("预演") {
                 store.startDryRun()
@@ -76,7 +76,7 @@ struct RunPanelView: View {
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
             .disabled(!store.canStart)
-            .keyboardShortcut("r", modifiers: .command)
+            .help("⌘R")
         }
     }
 

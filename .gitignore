@@ -4,3 +4,7 @@ dist/
 DerivedData/
 *.xcuserdata/
 *.swp
+
+# Personal editor / agent settings
+.vscode/
+.codex/
