@@ -23,6 +23,7 @@ final class RcloneRunner {
             rclonePath: rclonePath,
             arguments: makeArguments(task: task, dryRun: dryRun, streamLocalCopies: streamLocalCopies)
                 + remote.arguments,
+            environment: remote.environment,
             onFinish: onFinish
         )
     }
@@ -36,6 +37,7 @@ final class RcloneRunner {
         try start(
             rclonePath: rclonePath,
             arguments: makeCheckArguments(task: task) + remote.arguments,
+            environment: remote.environment,
             onFinish: onFinish
         )
     }
@@ -44,6 +46,7 @@ final class RcloneRunner {
     func start(
         rclonePath: String,
         arguments: [String],
+        environment: [String: String] = [:],
         onFinish: @escaping @MainActor (Int32, String) -> Void
     ) throws {
         let process = Process()
@@ -52,6 +55,9 @@ final class RcloneRunner {
 
         process.executableURL = URL(fileURLWithPath: rclonePath)
         process.arguments = arguments
+        if !environment.isEmpty {
+            process.environment = ProcessInfo.processInfo.environment.merging(environment) { _, new in new }
+        }
         process.standardOutput = output
         process.standardError = output
 

@@ -73,7 +73,7 @@ cd DiskFerry
 1. **设置“从”**：把要复制的文件夹拖到左边卡片上，或点“选择…”/“粘贴”/“输入地址…”。
 2. **设置“复制到”**：右边卡片同理。点 **⋯** 可以一键选择已连接的硬盘和共享、最近用过的位置，或“连接服务器…”。
 3. **确认写入位置**：卡片下方的“写入到”就是文件最终所在的文件夹。
-4. **开始复制**（⌘R）。不确定时先点 **预演**（⇧⌘R），只统计要复制多少，不写入任何文件。
+4. **开始复制**（⌘R）。不确定时先点 **预演**（⇧⌘R），只统计要复制多少，不写入任何文件，也不会预先建好目标文件夹。
 5. 复制完成后，这条路线会出现在左侧。点 ☆ 收藏，下次直接选中它再点“再次同步”。
 
 | 选项 | 说明 |
@@ -86,20 +86,22 @@ cd DiskFerry
 
 rclone 启动时会在 `127.0.0.1` 上开一个只供本机访问、带随机密码的统计接口，Disk Ferry 每秒读取一次 `core/stats`，拿到的是 rclone 自己记录的精确数字，而不是扫描目录猜出来的。
 
-默认命令（“高级”面板里可以看到并拷贝当前路线的完整命令）：
+默认命令（“高级”面板里可以看到并拷贝当前路线的命令，不含每次随机生成的 `--rc` 参数）：
 
 ```bash
-rclone copy "$SOURCE" "$TARGET" \
+RCLONE_RC_PASS=<随机密码> rclone copy "$SOURCE" "$TARGET" \
   --check-first --local-no-clone \
   --transfers 1 --checkers 2 --retries 10 --low-level-retries 20 \
   --exclude ".DS_Store" --exclude "._*" --exclude ".Spotlight-V100/**" \
   --exclude ".Trashes/**" --exclude ".fseventsd/**" --exclude ".TemporaryItems/**" \
-  --stats 0 --log-level NOTICE \
-  --rc --rc-addr 127.0.0.1:<随机端口> --rc-user diskferry --rc-pass <随机密码>
+  --log-level NOTICE --use-json-log --stats 1h --stats-log-level NOTICE --stats-one-line \
+  --rc --rc-addr 127.0.0.1:<随机端口> --rc-user diskferry
 ```
 
 - `--check-first`：先比对再传输，进度和剩余时间从头就准。
 - `--local-no-clone`：让 rclone 自己逐字节传输，而不是把整个文件交给系统复制，这样大视频也能看到平滑的进度。（仅在已安装的 rclone 支持时添加。）
+- `--log-level NOTICE --use-json-log --stats 1h …`：控制台只输出错误，外加退出时的一行最终统计，复制得太快、来不及轮询时也有准确数字。
+- rc 密码通过环境变量 `RCLONE_RC_PASS` 传给 rclone，本机其他用户用 `ps` 看不到。
 
 ## 隐私与缓存
 
@@ -110,7 +112,7 @@ Disk Ferry 不会：生成缩略图、预览照片或视频、读取 EXIF、建�
 ## 脚本调用
 
 ```bash
-open -a DiskFerry --args -source /Volumes/PhotoDisk/Photos -target /Volumes/NAS -autostart YES
+open -b com.local.DiskFerry --args -source /Volumes/PhotoDisk/Photos -target /Volumes/NAS -autostart YES
 ```
 
 ## 开发

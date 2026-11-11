@@ -2,8 +2,8 @@ import Foundation
 import XCTest
 @testable import DiskFerry
 
-/// End-to-end: runs real rclone with the same arguments the app uses and checks that
-/// live stats arrive over rc even though all console output goes to --log-file.
+/// End-to-end: runs real rclone with the same arguments and environment the app uses and
+/// checks that live stats arrive over rc while the console stays quiet.
 final class RcloneLiveStatsTests: XCTestCase {
     func testLiveStatsArriveDuringCopy() async throws {
         guard let rclone = RcloneLocator.locate(preferredPath: nil) else {
@@ -42,6 +42,8 @@ final class RcloneLiveStatsTests: XCTestCase {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: rclone)
         process.arguments = arguments
+        process.environment = ProcessInfo.processInfo.environment.merging(remote.environment) { _, new in new }
+        XCTAssertFalse(arguments.contains(remote.password), "the rc password must not appear in argv")
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
         try process.run()

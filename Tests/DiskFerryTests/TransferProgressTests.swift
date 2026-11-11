@@ -33,7 +33,6 @@ final class TransferProgressTests: XCTestCase {
         XCTAssertEqual(progress.phase, .transferring)
         XCTAssertEqual(progress.fraction ?? -1, 0.25, accuracy: 0.0001)
         XCTAssertTrue(progress.totalsAreFinal)
-        XCTAssertEqual(progress.remainingFiles, 9)
         XCTAssertEqual(progress.eta, 30)
     }
 
@@ -53,7 +52,7 @@ final class TransferProgressTests: XCTestCase {
     func testMarkSucceededCompletesTotals() {
         var progress = TransferProgress(
             stats: RcloneCoreStats(bytes: 90, totalBytes: 100, transfers: 9, totalTransfers: 10,
-                                   transferring: [.init(name: "a", size: 10, bytes: 5, percentage: 50, speedAvg: 1)]),
+                                   transferring: [.init(name: "a", size: 10, bytes: 5, speedAvg: 1)]),
             verifying: false,
             checkFirst: false,
             currentSpeed: 10

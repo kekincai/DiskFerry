@@ -55,8 +55,6 @@ final class TransferTaskTests: XCTestCase {
         task.targetPath = "/b"
         task.isPinned = true
         task.targetLayout = .merge
-        // ISO 8601 stores whole seconds.
-        task.createdAt = Date(timeIntervalSince1970: 1_700_000_000)
         task.lastRun = RunRecord(finishedAt: Date(timeIntervalSince1970: 0), outcome: .verified, bytes: 5, files: 1, errors: 0, duration: 3)
         let data = try JSONCoding.encoder.encode([task])
         let decoded = try JSONCoding.decoder.decode([TransferTask].self, from: data)

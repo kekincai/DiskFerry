@@ -45,6 +45,32 @@ final class RcloneRunnerTests: XCTestCase {
         XCTAssertEqual(stats.bytes, 11)
     }
 
+    /// The dry run's precheck no longer creates the destination folder, so rclone must
+    /// handle a missing one without creating it either.
+    func testDryRunIntoMissingFolderCreatesNothing() async throws {
+        guard let rclone = RcloneLocator.locate(preferredPath: nil) else {
+            throw XCTSkip("rclone is not installed")
+        }
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let source = root.appendingPathComponent("Photos", isDirectory: true)
+        let target = root.appendingPathComponent("target", isDirectory: true)
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try Data("hello".utf8).write(to: source.appendingPathComponent("a.txt"))
+
+        var task = TransferTask.empty
+        task.sourcePath = source.path
+        task.targetPath = target.path
+        task.targetLayout = .intoFolder
+        let arguments = RcloneRunner().makeArguments(task: task, dryRun: true, streamLocalCopies: true)
+
+        let output = try await run(rclone, arguments)
+        XCTAssertEqual(output.status, 0, output.text)
+        XCTAssertEqual(RcloneOutput.finalStats(output.text)?.totalTransfers, 1)
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: target.path).isEmpty)
+    }
+
     private func run(_ executable: String, _ arguments: [String]) async throws -> (status: Int32, text: String) {
         let runner = RcloneRunner()
         return try await withCheckedThrowingContinuation { continuation in

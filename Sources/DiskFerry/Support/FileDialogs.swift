@@ -1,7 +1,22 @@
 import AppKit
 
 enum FileDialogs {
-    static func chooseFolder(startingAt path: String? = nil, canCreateDirectories: Bool = false, message: String? = nil) -> String? {
+    /// Where the folder picker should open. Checks the filesystem, which can stall on a
+    /// dropped share, so call it off the main thread.
+    static func startingDirectory(for path: String) -> URL? {
+        let fileManager = FileManager.default
+        if !path.isEmpty {
+            var isDirectory: ObjCBool = false
+            guard fileManager.fileExists(atPath: path, isDirectory: &isDirectory) else { return nil }
+            return isDirectory.boolValue
+                ? URL(fileURLWithPath: path, isDirectory: true)
+                : URL(fileURLWithPath: path).deletingLastPathComponent()
+        }
+        return fileManager.fileExists(atPath: "/Volumes") ? URL(fileURLWithPath: "/Volumes", isDirectory: true) : nil
+    }
+
+    @MainActor
+    static func chooseFolder(startingAt directory: URL?, canCreateDirectories: Bool = false, message: String? = nil) -> String? {
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
@@ -10,18 +25,7 @@ enum FileDialogs {
         panel.prompt = "选择"
         panel.treatsFilePackagesAsDirectories = false
         panel.message = message ?? ""
-
-        if let path, !path.isEmpty {
-            var isDirectory: ObjCBool = false
-            if FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) {
-                panel.directoryURL = isDirectory.boolValue
-                    ? URL(fileURLWithPath: path, isDirectory: true)
-                    : URL(fileURLWithPath: path).deletingLastPathComponent()
-            }
-        } else if FileManager.default.fileExists(atPath: "/Volumes") {
-            panel.directoryURL = URL(fileURLWithPath: "/Volumes", isDirectory: true)
-        }
-
+        panel.directoryURL = directory
         return panel.runModal() == .OK ? panel.url?.path : nil
     }
 }

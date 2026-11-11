@@ -11,11 +11,56 @@ enum PathInspector {
 
     /// Is `candidate` the same as, or nested inside, `container`?
     static func isSameOrInside(_ candidate: String, _ container: String) -> Bool {
-        let child = URL(fileURLWithPath: candidate).standardizedFileURL.path
-        let parent = URL(fileURLWithPath: container).standardizedFileURL.path
+        hasPathPrefix(
+            URL(fileURLWithPath: candidate).standardizedFileURL.path,
+            URL(fileURLWithPath: container).standardizedFileURL.path
+        )
+    }
+
+    private static func hasPathPrefix(_ child: String, _ parent: String) -> Bool {
         if child == parent { return true }
         let prefix = parent.hasSuffix("/") ? parent : parent + "/"
         return child.hasPrefix(prefix)
+    }
+
+    /// `isSameOrInside` for the precheck: resolves symlinks in both paths and ignores case
+    /// (and Unicode normalization) when the container's volume does, so an alias or a
+    /// differently cased path cannot slip a destination into the source. Touches the
+    /// filesystem; never call it on the main thread.
+    static func resolvedIsSameOrInside(_ candidate: String, _ container: String) -> Bool {
+        // Compared as plain strings: `standardizedFileURL` drops a leading `/private`
+        // only for paths that exist, which would make canonical paths disagree.
+        let child = canonicalPath(candidate)
+        let parent = canonicalPath(container)
+        if hasPathPrefix(child, parent) { return true }
+
+        let caseSensitive = (try? URL(fileURLWithPath: parent)
+            .resourceValues(forKeys: [.volumeSupportsCaseSensitiveNamesKey]))?
+            .volumeSupportsCaseSensitiveNames ?? false
+        guard !caseSensitive else { return false }
+        return hasPathPrefix(folded(child), folded(parent))
+    }
+
+    /// Resolves symlinks in the deepest existing ancestor and appends the missing tail
+    /// (for example the folder a copy is about to create) unchanged.
+    private static func canonicalPath(_ path: String) -> String {
+        var existing = URL(fileURLWithPath: path).standardizedFileURL
+        var tail: [String] = []
+        while existing.path != "/", !FileManager.default.fileExists(atPath: existing.path) {
+            tail.insert(existing.lastPathComponent, at: 0)
+            existing.deleteLastPathComponent()
+        }
+        guard let resolved = realpath(existing.path, nil) else { return existing.path }
+        defer { free(resolved) }
+        var url = URL(fileURLWithPath: String(cString: resolved))
+        for component in tail {
+            url.appendPathComponent(component)
+        }
+        return url.path
+    }
+
+    private static func folded(_ path: String) -> String {
+        path.precomposedStringWithCanonicalMapping.folding(options: [.caseInsensitive], locale: nil)
     }
 
     /// Shortens a path for display: `~/…` for home, otherwise unchanged.
@@ -40,21 +85,12 @@ struct VolumeDescriptor: Identifiable, Hashable, Sendable {
     /// For network shares, the server-side location, e.g. `smb://minipc/G`.
     var networkLocation: String?
     var availableBytes: Int64?
-    var totalBytes: Int64?
 
     var symbolName: String {
         switch kind {
         case .network: "server.rack"
         case .external: "externaldrive"
         case .internalDisk: "internaldrive"
-        }
-    }
-
-    var kindLabel: String {
-        switch kind {
-        case .network: "网络共享"
-        case .external: "外置磁盘"
-        case .internalDisk: "本机磁盘"
         }
     }
 }
@@ -120,8 +156,7 @@ enum VolumeCatalog {
             name: name,
             kind: kind,
             networkLocation: mount.isNetwork ? NetworkLocation(mountSource: mount.source)?.smbURLString : nil,
-            availableBytes: mount.availableBytes,
-            totalBytes: mount.totalBytes
+            availableBytes: mount.availableBytes
         )
     }
 
@@ -140,7 +175,6 @@ private struct MountInfo {
     var source: String
     var fileSystem: String
     var availableBytes: Int64
-    var totalBytes: Int64
 
     var isNetwork: Bool {
         ["smbfs", "afpfs", "nfs", "webdav"].contains(fileSystem)
@@ -152,9 +186,7 @@ private struct MountInfo {
         mountPoint = Self.string(from: &info.f_mntonname)
         source = Self.string(from: &info.f_mntfromname)
         fileSystem = Self.string(from: &info.f_fstypename)
-        let blockSize = Int64(info.f_bsize)
-        availableBytes = Int64(info.f_bavail) * blockSize
-        totalBytes = Int64(info.f_blocks) * blockSize
+        availableBytes = Int64(info.f_bavail) * Int64(info.f_bsize)
     }
 
     private static func string<T>(from tuple: inout T) -> String {

@@ -38,6 +38,13 @@ final class TransferMonitor: ObservableObject {
         updateDockBadge()
     }
 
+    /// Shows an earlier phase's numbers again (the copy's, once verification ends).
+    func restore(_ earlier: TransferProgress?) {
+        guard let earlier else { return }
+        progress = earlier
+        clearDockBadge()
+    }
+
     func markSucceeded() {
         var next = progress
         next.markSucceeded()

@@ -38,7 +38,7 @@ struct RoutesSidebar: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
             .disabled(!store.canEdit)
-            .keyboardShortcut("n", modifiers: .command)
+            .help("新建路线（⌘N）")
         }
         .alert("重命名路线", isPresented: isRenaming) {
             TextField("名称", text: $renameText)

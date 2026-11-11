@@ -5,7 +5,7 @@ import Foundation
 
 let root = URL(fileURLWithPath: CommandLine.arguments.dropFirst().first ?? FileManager.default.currentDirectoryPath)
 let iconset = root.appendingPathComponent("dist/DiskFerry.iconset", isDirectory: true)
-let output = root.appendingPathComponent("dist/DiskFerry.icns")
+let output = root.appendingPathComponent("Assets/DiskFerry.icns")
 
 try? FileManager.default.removeItem(at: iconset)
 try FileManager.default.createDirectory(at: iconset, withIntermediateDirectories: true)

@@ -9,7 +9,6 @@ struct DetailTabsView: View {
     enum Tab: String, CaseIterable, Identifiable {
         case files
         case checks
-        case compare
 
         var id: String { rawValue }
 
@@ -17,7 +16,6 @@ struct DetailTabsView: View {
             switch self {
             case .files: "正在传输"
             case .checks: "检查结果"
-            case .compare: "目录对比"
             }
         }
     }
@@ -39,14 +37,6 @@ struct DetailTabsView: View {
                     ActiveFilesView(monitor: monitor, isRunning: store.status.isRunningProcess)
                 case .checks:
                     ChecksView(items: store.precheckItems)
-                case .compare:
-                    HeatmapView(
-                        lastRefresh: store.lastHeatmapRefresh,
-                        items: store.heatmapItems,
-                        isRefreshing: store.isRefreshingHeatmap,
-                        canRefresh: store.task.isReady,
-                        onRefresh: store.refreshHeatmapOnce
-                    )
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)

@@ -2,8 +2,8 @@ import Darwin
 import Foundation
 
 /// Talks to the rclone remote-control server that each transfer process starts on
-/// 127.0.0.1. rclone writes its human-readable stats into `--log-file`, so stdout/stderr
-/// carry nothing useful; `core/stats` is the only accurate, cheap live source.
+/// 127.0.0.1. rclone's console only carries errors and one final stats line at exit
+/// (see `RcloneRunner`), so `core/stats` is the accurate, cheap live source.
 struct RcloneRemoteControl: Sendable {
     let port: UInt16
     let user: String
@@ -17,13 +17,20 @@ struct RcloneRemoteControl: Sendable {
         )
     }
 
+    /// The password is not here: it goes in `environment`, because command-line
+    /// arguments are visible to every user on the Mac through `ps`.
     var arguments: [String] {
         [
             "--rc",
             "--rc-addr", "127.0.0.1:\(port)",
-            "--rc-user", user,
-            "--rc-pass", password
+            "--rc-user", user
         ]
+    }
+
+    /// rclone reads any flag from `RCLONE_<FLAG>`; a process's environment is only
+    /// readable by its own user.
+    var environment: [String: String] {
+        ["RCLONE_RC_PASS": password]
     }
 
     var statsURL: URL {
@@ -77,7 +84,6 @@ struct RcloneCoreStats: Decodable, Equatable, Sendable {
     var totalChecks: Int
     var listed: Int
     var errors: Int
-    var fatalError: Bool
     var lastError: String?
     var speed: Double
     var eta: Double?
@@ -88,13 +94,12 @@ struct RcloneCoreStats: Decodable, Equatable, Sendable {
         var name: String
         var size: Int64
         var bytes: Int64
-        var percentage: Int
         var speedAvg: Double?
     }
 
     private enum CodingKeys: String, CodingKey {
         case bytes, totalBytes, transfers, totalTransfers, checks, totalChecks, listed
-        case errors, fatalError, lastError, speed, eta, elapsedTime, transferring
+        case errors, lastError, speed, eta, elapsedTime, transferring
     }
 
     init(
@@ -106,7 +111,6 @@ struct RcloneCoreStats: Decodable, Equatable, Sendable {
         totalChecks: Int = 0,
         listed: Int = 0,
         errors: Int = 0,
-        fatalError: Bool = false,
         lastError: String? = nil,
         speed: Double = 0,
         eta: Double? = nil,
@@ -121,7 +125,6 @@ struct RcloneCoreStats: Decodable, Equatable, Sendable {
         self.totalChecks = totalChecks
         self.listed = listed
         self.errors = errors
-        self.fatalError = fatalError
         self.lastError = lastError
         self.speed = speed
         self.eta = eta
@@ -139,7 +142,6 @@ struct RcloneCoreStats: Decodable, Equatable, Sendable {
         totalChecks = try container.decodeIfPresent(Int.self, forKey: .totalChecks) ?? 0
         listed = try container.decodeIfPresent(Int.self, forKey: .listed) ?? 0
         errors = try container.decodeIfPresent(Int.self, forKey: .errors) ?? 0
-        fatalError = try container.decodeIfPresent(Bool.self, forKey: .fatalError) ?? false
         lastError = try container.decodeIfPresent(String.self, forKey: .lastError)
         speed = try container.decodeIfPresent(Double.self, forKey: .speed) ?? 0
         // rclone reports `eta: null` when it cannot estimate yet.
@@ -151,7 +153,7 @@ struct RcloneCoreStats: Decodable, Equatable, Sendable {
 
 extension RcloneCoreStats.Item {
     private enum CodingKeys: String, CodingKey {
-        case name, size, bytes, percentage, speedAvg
+        case name, size, bytes, speedAvg
     }
 
     init(from decoder: Decoder) throws {
@@ -159,7 +161,6 @@ extension RcloneCoreStats.Item {
         name = try container.decodeIfPresent(String.self, forKey: .name) ?? ""
         size = try container.decodeIfPresent(Int64.self, forKey: .size) ?? 0
         bytes = try container.decodeIfPresent(Int64.self, forKey: .bytes) ?? 0
-        percentage = try container.decodeIfPresent(Int.self, forKey: .percentage) ?? 0
         speedAvg = try container.decodeIfPresent(Double.self, forKey: .speedAvg)
     }
 }
