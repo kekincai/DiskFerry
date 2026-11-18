@@ -41,7 +41,8 @@ struct RunPanelView: View {
     }
 
     private var showsProgress: Bool {
-        store.status.isRunningProcess || store.status == .stopping
+        // While cleaning, the copy's final numbers stay on screen.
+        store.status.isRunningProcess || store.status == .stopping || store.status == .cleaning
             || (store.lastResult != nil && store.status != .idle)
     }
 

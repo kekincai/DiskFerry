@@ -85,6 +85,9 @@ struct VolumeDescriptor: Identifiable, Hashable, Sendable {
     /// For network shares, the server-side location, e.g. `smb://minipc/G`.
     var networkLocation: String?
     var availableBytes: Int64?
+    /// `f_fstypename`, e.g. `apfs`, `exfat`, `msdos`, `smbfs`. Lets the command preview
+    /// match the real run without touching the filesystem while rendering.
+    var fileSystem: String = ""
 
     var symbolName: String {
         switch kind {
@@ -93,6 +96,15 @@ struct VolumeDescriptor: Identifiable, Hashable, Sendable {
         case .internalDisk: "internaldrive"
         }
     }
+}
+
+/// What the destination volume can store, read once in the preflight and carried through
+/// the run, so neither rclone's arguments nor the cleanup step look at the disk again.
+struct VolumeTraits: Equatable, Sendable {
+    /// `f_fstypename`, e.g. `apfs`, `exfat`, `msdos`.
+    var fileSystem: String
+    /// False on exFAT/FAT, where macOS writes every xattr into a `._name` sidecar file.
+    var storesExtendedAttributesNatively: Bool
 }
 
 enum VolumeCatalog {
@@ -156,8 +168,47 @@ enum VolumeCatalog {
             name: name,
             kind: kind,
             networkLocation: mount.isNetwork ? NetworkLocation(mountSource: mount.source)?.smbURLString : nil,
-            availableBytes: mount.availableBytes
+            availableBytes: mount.availableBytes,
+            fileSystem: mount.fileSystem
         )
+    }
+
+    /// File system type and xattr support of the volume holding `path`, or nil if the
+    /// path is not reachable. Calls `statfs` and `getattrlist`; never on the main thread.
+    static func traits(path: String) -> VolumeTraits? {
+        guard let mount = MountInfo(path: path) else { return nil }
+        return VolumeTraits(
+            fileSystem: mount.fileSystem,
+            storesExtendedAttributesNatively: storesExtendedAttributesNatively(path: path)
+        )
+    }
+
+    /// Reads `VOL_CAP_INT_EXTENDED_ATTR` from the volume capabilities. exFAT and FAT report
+    /// it as valid and unset; macOS then emulates xattrs with `._` AppleDouble files.
+    /// Anything that cannot be read counts as native, so the cleanup never runs on a
+    /// volume it is unsure about.
+    private static func storesExtendedAttributesNatively(path: String) -> Bool {
+        struct Buffer {
+            var length: UInt32 = 0
+            var capabilities = vol_capabilities_attr_t()
+        }
+        var request = attrlist(
+            bitmapcount: UInt16(ATTR_BIT_MAP_COUNT),
+            reserved: 0,
+            commonattr: 0,
+            volattr: attrgroup_t(ATTR_VOL_INFO) | attrgroup_t(ATTR_VOL_CAPABILITIES),
+            dirattr: 0,
+            fileattr: 0,
+            forkattr: 0
+        )
+        var buffer = Buffer()
+        guard getattrlist(path, &request, &buffer, MemoryLayout<Buffer>.size, 0) == 0 else { return true }
+        let index = Int(VOL_CAPABILITIES_INTERFACES)
+        let bit = UInt32(VOL_CAP_INT_EXTENDED_ATTR)
+        let valid = withUnsafeBytes(of: &buffer.capabilities.valid) { $0.bindMemory(to: UInt32.self)[index] }
+        let capable = withUnsafeBytes(of: &buffer.capabilities.capabilities) { $0.bindMemory(to: UInt32.self)[index] }
+        guard valid & bit != 0 else { return true }
+        return capable & bit != 0
     }
 
     private static func rank(_ kind: VolumeDescriptor.Kind) -> Int {

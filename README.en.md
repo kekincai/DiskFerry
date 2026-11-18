@@ -40,7 +40,7 @@ external drive / local folder  ──rclone──▶  SMB share / NAS / another 
 - **Always see where files land.** "Put into a folder of the same name" (like a Finder drag) or "merge into the destination", with the exact write path shown.
 - **Accurate, cheap live progress.** Percent, bytes, files, current and average speed, ETA, skipped files and in-flight files come from rclone's own stats, refreshed once per second while only the progress area redraws.
 - **Resume by running again.** Files already on the destination are skipped.
-- **Nothing extra on disk.** No log files, summaries, thumbnails or caches. rclone's errors are shown in the window only when a run fails.
+- **Nothing extra on disk.** No log files, summaries, thumbnails or caches. rclone's errors are shown in the window only when a run fails. On exFAT and FAT disks, the 4 KB `._` files macOS attaches to every copied file are cleaned up after the copy.
 - Keeps the Mac awake while copying, shows progress on the Dock icon, notifies when a background copy finishes, and asks before quitting mid-copy.
 - Optional size-only verification after copying (`rclone check --size-only`).
 
@@ -76,6 +76,7 @@ cd DiskFerry
 | Speed (速度) | Conservative (1 parallel transfer) / Normal (2) / Fast (4) / Custom. Use Conservative for spinning disks and weak Wi‑Fi, Fast for gigabit Ethernet + SSD. |
 | Count first (先统计再复制) | On by default. Compares everything before transferring, so totals and ETA are right from the start. |
 | Verify after copying (复制后校验) | Checks every file's size again; does not read file contents. |
+| Clean up macOS `._` files (清理 macOS 生成的 ._ 文件, in Advanced) | On by default. On disks that cannot store extended attributes natively (exFAT, FAT), macOS attaches a 4 KB `._` file to every file and folder written. After a successful copy, those that hold only `com.apple.provenance` are deleted; ones with Finder tags, resource forks or other data, and ones without a matching file, are kept. Dry runs and interrupted or failed runs do not clean up. Nothing happens on APFS and similar disks. |
 
 ## How live progress works
 
@@ -95,6 +96,8 @@ RCLONE_RC_PASS=<random> rclone copy "$SOURCE" "$TARGET" \
 
 - `--check-first` compares everything before transferring, so totals and ETA are right from the start.
 - `--local-no-clone` (added when the installed rclone supports it) makes rclone stream bytes itself instead of handing whole files to the OS, so large videos show smooth progress.
+- `--modify-window 2s` is added only when the destination is an exFAT or FAT (`msdos`) disk. Their timestamps are only precise to 10 ms–2 s, so without it every re-run hashes both sides of every existing file and rewrites its time.
+- `--exclude "._*"` only skips `._` files already in the source. The ones macOS creates on the destination are handled by the cleanup step after the copy (see the options table).
 - `--log-level NOTICE --use-json-log --stats 1h …` keeps the console to errors plus one final stats line at exit, so runs that finish before the first poll still get exact numbers.
 - The rc password reaches rclone through the `RCLONE_RC_PASS` environment variable, so other users on the Mac cannot read it with `ps`.
 

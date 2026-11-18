@@ -71,6 +71,29 @@ final class RcloneRunnerTests: XCTestCase {
         XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: target.path).isEmpty)
     }
 
+    /// Plan B: exFAT and FAT store coarse modification times; only those get a window,
+    /// and only for `copy`.
+    func testModifyWindowOnlyForCoarseTimestampVolumes() {
+        var task = TransferTask.empty
+        task.sourcePath = "/Volumes/PhotoDisk/Photos"
+        task.targetPath = "/Volumes/Stick"
+        let runner = RcloneRunner()
+
+        func window(_ fileSystem: String?) -> String? {
+            let arguments = runner.makeArguments(task: task, dryRun: false, destinationFileSystem: fileSystem)
+            guard let index = arguments.firstIndex(of: "--modify-window") else { return nil }
+            return arguments[index + 1]
+        }
+        XCTAssertEqual(window("exfat"), "2s")
+        XCTAssertEqual(window("msdos"), "2s")
+        for other in ["apfs", "hfs", "smbfs", "ntfs", ""] {
+            XCTAssertNil(window(other), other)
+        }
+        XCTAssertNil(window(nil))
+        XCTAssertTrue(runner.makeArguments(task: task, dryRun: true, destinationFileSystem: "exfat").contains("--modify-window"))
+        XCTAssertFalse(runner.makeCheckArguments(task: task).contains("--modify-window"))
+    }
+
     func testGlobCharactersInFolderNamesAreEscaped() {
         XCTAssertEqual(RcloneRunner.escapeGlob("Photos [2024] {raw}*?"), #"Photos \[2024\] \{raw\}\*\?"#)
         XCTAssertEqual(RcloneRunner.escapeGlob(#"a\b"#), #"a\\b"#)

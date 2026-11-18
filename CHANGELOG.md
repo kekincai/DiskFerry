@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Added
+- Cleanup of the 4 KB `._` files macOS writes next to every copied file and folder on exFAT and FAT disks. After a successful copy, a `._X` file is deleted only when it is a regular file and `X`'s only extended attribute is `com.apple.provenance`; sidecars with Finder tags, resource forks or other data, and orphans, are kept. It runs only on volumes without native xattr support, never after a dry run or an interrupted or failed copy, and can be turned off per route in Advanced ("清理 macOS 生成的 ._ 文件", on by default, also for saved routes). Stopping during cleanup ends the run as completed.
+
 ### Removed
 - The folder comparison tab. It scanned only the first level of each folder and compared allocated size, so its percentages were unreliable; all numbers now come from rclone.
 - The precheck warning shown for every destination under `/Volumes/`.
@@ -20,6 +23,7 @@
 - The precheck runs once per start instead of preparing the destination twice.
 - The rclone path in Settings is saved and checked when you press Return, not on every keystroke.
 - The command preview only includes `--local-no-clone` when the installed rclone supports it.
+- Copies to exFAT and FAT disks pass `--modify-window 2s`. Their coarse timestamps used to make every re-run hash both sides of every existing file and rewrite its time (which also brought the `._` files back). The command preview shows the flag too.
 - `script/build_and_run.sh` refuses to quit the app while it is copying, and its `--telemetry` mode is gone.
 - The app bundle uses the committed `Assets/DiskFerry.icns` instead of regenerating it on every build.
 

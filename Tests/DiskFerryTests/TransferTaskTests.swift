@@ -31,6 +31,21 @@ final class TransferTaskTests: XCTestCase {
         XCTAssertEqual(try JSONCoding.decoder.decode([TransferTask].self, from: Data(legacy.utf8)).first?.sourceItems, [])
     }
 
+    /// The cleanup defaults to on, including for routes saved before the option existed.
+    func testCleanSidecarsDefaultsToOnAndRoundTrips() throws {
+        XCTAssertTrue(TransferTask.empty.cleanSidecars)
+
+        let legacy = #"[{"id": "x", "sourcePath": "/a", "targetPath": "/b", "verifyAfterCopy": true}]"#
+        XCTAssertEqual(try JSONCoding.decoder.decode([TransferTask].self, from: Data(legacy.utf8)).first?.cleanSidecars, true)
+
+        var task = TransferTask.empty
+        task.sourcePath = "/a"
+        task.targetPath = "/b"
+        task.cleanSidecars = false
+        let data = try JSONCoding.encoder.encode([task])
+        XCTAssertEqual(try JSONCoding.decoder.decode([TransferTask].self, from: data).first?.cleanSidecars, false)
+    }
+
     func testIntoFolderLayoutNestsSourceName() {
         var task = TransferTask.empty
         task.sourcePath = "/Volumes/PhotoDisk/Photos"

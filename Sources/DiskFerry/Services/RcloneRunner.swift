@@ -16,13 +16,18 @@ final class RcloneRunner {
         task: TransferTask,
         dryRun: Bool,
         streamLocalCopies: Bool,
+        destinationFileSystem: String?,
         remote: RcloneRemoteControl,
         onFinish: @escaping @MainActor (Int32, String) -> Void
     ) throws {
         try start(
             rclonePath: rclonePath,
-            arguments: makeArguments(task: task, dryRun: dryRun, streamLocalCopies: streamLocalCopies)
-                + remote.arguments,
+            arguments: makeArguments(
+                task: task,
+                dryRun: dryRun,
+                streamLocalCopies: streamLocalCopies,
+                destinationFileSystem: destinationFileSystem
+            ) + remote.arguments,
             environment: remote.environment,
             onFinish: onFinish
         )
@@ -96,7 +101,14 @@ final class RcloneRunner {
         process.terminate()
     }
 
-    func makeArguments(task: TransferTask, dryRun: Bool, streamLocalCopies: Bool = false) -> [String] {
+    /// `destinationFileSystem` is the destination volume's `f_fstypename`, read off the
+    /// main thread beforehand; nil when unknown.
+    func makeArguments(
+        task: TransferTask,
+        dryRun: Bool,
+        streamLocalCopies: Bool = false,
+        destinationFileSystem: String? = nil
+    ) -> [String] {
         var arguments = [
             "copy",
             task.sourcePath,
@@ -115,6 +127,10 @@ final class RcloneRunner {
             // Stream bytes through rclone instead of an OS-level file copy, so progress is
             // counted per byte (not per finished file) and no clone/copyfile cache is involved.
             arguments.append("--local-no-clone")
+        }
+
+        if let window = Self.modifyWindow(forFileSystem: destinationFileSystem) {
+            arguments.append(contentsOf: ["--modify-window", window])
         }
 
         arguments.append(contentsOf: [
@@ -180,6 +196,15 @@ final class RcloneRunner {
             "--stats-log-level", "NOTICE",
             "--stats-one-line"
         ]
+    }
+
+    /// exFAT keeps modification times to 10 ms and FAT to 2 s, against nanoseconds on APFS.
+    /// Without a window rclone sees every file already on such a disk as changed: it hashes
+    /// both sides and rewrites the time, which also makes macOS write a fresh `._` sidecar.
+    /// 2 s covers FAT. Only `copy` gets it; the verification is `--size-only` anyway.
+    static func modifyWindow(forFileSystem fileSystem: String?) -> String? {
+        guard let fileSystem else { return nil }
+        return ["exfat", "msdos"].contains(fileSystem.lowercased()) ? "2s" : nil
     }
 
     /// rclone exit codes, see https://rclone.org/docs/#exit-code

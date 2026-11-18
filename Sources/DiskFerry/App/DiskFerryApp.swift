@@ -61,6 +61,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard let store, store.canStop else { return .terminateNow }
+        // The copy is already done; the cleanup can stop at any point and is picked up
+        // again by the next run, so there is nothing to confirm.
+        if store.status == .cleaning {
+            store.stopForTermination()
+            return .terminateNow
+        }
 
         let alert = NSAlert()
         alert.messageText = "正在复制，确定要退出吗？"

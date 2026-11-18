@@ -19,6 +19,9 @@ struct TransferTask: Codable, Identifiable, Equatable {
     var verifyAfterCopy: Bool
     var targetLayout: TargetLayout
     var checkFirst: Bool
+    /// After a real copy to a volume without native xattrs (exFAT, FAT), delete the `._`
+    /// files macOS created that only hold `com.apple.provenance`. See `SidecarCleaner`.
+    var cleanSidecars: Bool = true
     var isPinned: Bool
     var lastRun: RunRecord?
 
@@ -88,7 +91,7 @@ struct TransferTask: Codable, Identifiable, Equatable {
     private enum CodingKeys: String, CodingKey {
         case id, name, sourcePath, sourceItems, targetPath, mode, transfers, checkers
         case retries, lowLevelRetries, excludes, verifyAfterCopy, targetLayout
-        case checkFirst, isPinned, lastRun
+        case checkFirst, cleanSidecars, isPinned, lastRun
     }
 
     /// Tolerates task files written by older versions, which had no layout, pin or run fields
@@ -109,6 +112,8 @@ struct TransferTask: Codable, Identifiable, Equatable {
         excludes = try container.decodeIfPresent([String].self, forKey: .excludes) ?? fallback.excludes
         verifyAfterCopy = try container.decodeIfPresent(Bool.self, forKey: .verifyAfterCopy) ?? false
         checkFirst = try container.decodeIfPresent(Bool.self, forKey: .checkFirst) ?? true
+        // On for routes saved before the option existed, as for new ones.
+        cleanSidecars = try container.decodeIfPresent(Bool.self, forKey: .cleanSidecars) ?? true
         isPinned = try container.decodeIfPresent(Bool.self, forKey: .isPinned) ?? false
         lastRun = try container.decodeIfPresent(RunRecord.self, forKey: .lastRun)
 
