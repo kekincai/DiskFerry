@@ -124,10 +124,7 @@ final class RcloneRunner {
             "--low-level-retries", "\(task.lowLevelRetries)"
         ])
 
-        for exclude in task.excludes {
-            arguments.append(contentsOf: ["--exclude", exclude])
-        }
-
+        arguments.append(contentsOf: filterArguments(task: task))
         arguments.append(contentsOf: quietConsole)
         return arguments
     }
@@ -141,11 +138,35 @@ final class RcloneRunner {
             "--one-way",
             "--checkers", "\(task.checkers)"
         ]
-        for exclude in task.excludes {
-            arguments.append(contentsOf: ["--exclude", exclude])
-        }
+        arguments.append(contentsOf: filterArguments(task: task))
         arguments.append(contentsOf: quietConsole)
         return arguments
+    }
+
+    /// A single folder only needs the excludes. Several folders are copied in one run from
+    /// their shared parent, so the filter keeps only those folders. Everything is written as
+    /// `--filter` there, because rclone applies `--filter` rules in command-line order but
+    /// groups `--exclude` rules separately.
+    private func filterArguments(task: TransferTask) -> [String] {
+        guard task.hasMultipleSources else {
+            return task.excludes.flatMap { ["--exclude", $0] }
+        }
+        var rules = task.excludes.map { "- \($0)" }
+        rules += task.sourceItems.map { "+ /\(Self.escapeGlob($0))/**" }
+        rules.append("- **")
+        return rules.flatMap { ["--filter", $0] }
+    }
+
+    /// Folder names are matched literally, not as glob patterns.
+    static func escapeGlob(_ name: String) -> String {
+        var escaped = ""
+        for character in name {
+            if "\\*?[]{}".contains(character) {
+                escaped.append("\\")
+            }
+            escaped.append(character)
+        }
+        return escaped
     }
 
     /// Errors and notices only, as JSON lines. The UI polls rc for live numbers; the

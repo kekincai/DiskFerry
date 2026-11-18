@@ -119,7 +119,7 @@ private struct RouteRow: View {
             }
         }
         .padding(.vertical, 3)
-        .help("\(route.sourcePath)\n→ \(route.resolvedTargetPath)")
+        .help("\(route.sourceFolderPaths.joined(separator: "\n"))\n→ \(route.resolvedTargetPath)")
     }
 
     private func lastRunText(_ run: RunRecord) -> String {

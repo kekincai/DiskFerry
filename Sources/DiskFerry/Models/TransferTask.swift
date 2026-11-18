@@ -4,7 +4,11 @@ import Foundation
 struct TransferTask: Codable, Identifiable, Equatable {
     var id: String
     var name: String
+    /// The folder to copy, or, when `sourceItems` is set, the folder that holds them.
     var sourcePath: String
+    /// Names of the folders inside `sourcePath` to copy, when several were selected at once.
+    /// Empty means `sourcePath` itself is copied.
+    var sourceItems: [String] = []
     var targetPath: String
     var mode: CopyMode
     var transfers: Int
@@ -82,7 +86,7 @@ struct TransferTask: Codable, Identifiable, Equatable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, sourcePath, targetPath, mode, transfers, checkers
+        case id, name, sourcePath, sourceItems, targetPath, mode, transfers, checkers
         case retries, lowLevelRetries, excludes, verifyAfterCopy, targetLayout
         case checkFirst, isPinned, lastRun
     }
@@ -95,6 +99,7 @@ struct TransferTask: Codable, Identifiable, Equatable {
         id = try container.decodeIfPresent(String.self, forKey: .id) ?? fallback.id
         name = try container.decodeIfPresent(String.self, forKey: .name) ?? ""
         sourcePath = try container.decodeIfPresent(String.self, forKey: .sourcePath) ?? ""
+        sourceItems = try container.decodeIfPresent([String].self, forKey: .sourceItems) ?? []
         targetPath = try container.decodeIfPresent(String.self, forKey: .targetPath) ?? ""
         mode = try container.decodeIfPresent(CopyMode.self, forKey: .mode) ?? fallback.mode
         transfers = try container.decodeIfPresent(Int.self, forKey: .transfers) ?? fallback.transfers
@@ -115,8 +120,33 @@ struct TransferTask: Codable, Identifiable, Equatable {
         }
     }
 
+    var hasMultipleSources: Bool {
+        !sourceItems.isEmpty
+    }
+
+    /// Every folder that gets copied, as full paths.
+    var sourceFolderPaths: [String] {
+        guard !sourcePath.isEmpty else { return [] }
+        guard hasMultipleSources else { return [sourcePath] }
+        let parent = URL(fileURLWithPath: sourcePath, isDirectory: true)
+        return sourceItems.map { parent.appendingPathComponent($0, isDirectory: true).path }
+    }
+
+    /// Each copied folder and the folder it is written to.
+    var copyPairs: [(source: String, destination: String)] {
+        guard isReady else { return [] }
+        guard hasMultipleSources else { return [(sourcePath, resolvedTargetPath)] }
+        let target = URL(fileURLWithPath: targetPath, isDirectory: true)
+        return zip(sourceFolderPaths, sourceItems).map { source, name in
+            (source, target.appendingPathComponent(name, isDirectory: true).path)
+        }
+    }
+
     var sourceName: String {
         guard !sourcePath.isEmpty else { return "" }
+        if let first = sourceItems.first {
+            return "\(first) 等 \(sourceItems.count) 个文件夹"
+        }
         return URL(fileURLWithPath: sourcePath).lastPathComponent
     }
 
@@ -142,6 +172,8 @@ struct TransferTask: Codable, Identifiable, Equatable {
     /// so it must never touch a (possibly stalled) network mount.
     var resolvedTargetPath: String {
         guard !sourcePath.isEmpty, !targetPath.isEmpty else { return targetPath }
+        // Several folders always land side by side, each in its own folder, like a Finder drag.
+        guard !hasMultipleSources else { return targetPath }
         switch targetLayout {
         case .merge:
             return targetPath
@@ -174,7 +206,8 @@ struct TransferTask: Codable, Identifiable, Equatable {
 
     /// Same route, ignoring run history and display name.
     func hasSameRoute(as other: TransferTask) -> Bool {
-        sourcePath == other.sourcePath && targetPath == other.targetPath && targetLayout == other.targetLayout
+        sourcePath == other.sourcePath && sourceItems == other.sourceItems
+            && targetPath == other.targetPath && targetLayout == other.targetLayout
     }
 }
 

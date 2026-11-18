@@ -71,6 +71,49 @@ final class RcloneRunnerTests: XCTestCase {
         XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: target.path).isEmpty)
     }
 
+    func testGlobCharactersInFolderNamesAreEscaped() {
+        XCTAssertEqual(RcloneRunner.escapeGlob("Photos [2024] {raw}*?"), #"Photos \[2024\] \{raw\}\*\?"#)
+        XCTAssertEqual(RcloneRunner.escapeGlob(#"a\b"#), #"a\\b"#)
+    }
+
+    /// Several folders from one parent are copied in one run: only those folders, each
+    /// into its own folder in the target, still without the system files.
+    func testSeveralSourceFoldersCopyOnlyTheSelectedOnes() async throws {
+        guard let rclone = RcloneLocator.locate(preferredPath: nil) else {
+            throw XCTSkip("rclone is not installed")
+        }
+        let fileManager = FileManager.default
+        let root = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let parent = root.appendingPathComponent("Disk", isDirectory: true)
+        let target = root.appendingPathComponent("target", isDirectory: true)
+        defer { try? fileManager.removeItem(at: root) }
+        // "[2024]" would match a single character as a glob; "Photos" alone would not be selected.
+        for folder in ["Photos [2024]", "Docs", "Photos", "Skip"] {
+            let url = parent.appendingPathComponent(folder, isDirectory: true)
+            try fileManager.createDirectory(at: url.appendingPathComponent("sub", isDirectory: true), withIntermediateDirectories: true)
+            try Data(folder.utf8).write(to: url.appendingPathComponent("sub/file.txt"))
+            try Data().write(to: url.appendingPathComponent(".DS_Store"))
+        }
+        try Data("top".utf8).write(to: parent.appendingPathComponent("loose.txt"))
+        try fileManager.createDirectory(at: target, withIntermediateDirectories: true)
+
+        var task = TransferTask.empty
+        task.sourcePath = parent.path
+        task.sourceItems = ["Docs", "Photos [2024]"]
+        task.targetPath = target.path
+        let output = try await run(rclone, RcloneRunner().makeArguments(task: task, dryRun: false))
+        XCTAssertEqual(output.status, 0, output.text)
+
+        let copied = try XCTUnwrap(fileManager.subpaths(atPath: target.path)).sorted()
+        XCTAssertEqual(copied, [
+            "Docs", "Docs/sub", "Docs/sub/file.txt",
+            "Photos [2024]", "Photos [2024]/sub", "Photos [2024]/sub/file.txt"
+        ])
+
+        let check = try await run(rclone, RcloneRunner().makeCheckArguments(task: task))
+        XCTAssertEqual(check.status, 0, check.text)
+    }
+
     private func run(_ executable: String, _ arguments: [String]) async throws -> (status: Int32, text: String) {
         let runner = RcloneRunner()
         return try await withCheckedThrowingContinuation { continuation in

@@ -154,13 +154,15 @@ final class TransferStore: ObservableObject {
         if !targetStatus.isChecking, !targetStatus.exists {
             return "目标位置当前无法访问，共享可能已断开。"
         }
-        let source = URL(fileURLWithPath: task.sourcePath).standardizedFileURL.path
-        let target = URL(fileURLWithPath: task.resolvedTargetPath).standardizedFileURL.path
-        if source == target {
-            return "源和目标是同一个文件夹。"
-        }
-        if PathInspector.isSameOrInside(target, source) {
-            return "目标位于源文件夹内部，请换一个目标。"
+        for pair in task.copyPairs {
+            let source = URL(fileURLWithPath: pair.source).standardizedFileURL.path
+            let target = URL(fileURLWithPath: pair.destination).standardizedFileURL.path
+            if source == target {
+                return "源和目标是同一个文件夹。"
+            }
+            if PathInspector.isSameOrInside(target, source) {
+                return "目标位于源文件夹内部，请换一个目标。"
+            }
         }
         return nil
     }
@@ -177,6 +179,7 @@ final class TransferStore: ObservableObject {
     func recentPaths(for role: LocationRole) -> [String] {
         var seen = Set<String>()
         return routes
+            .filter { role == .target || !$0.hasMultipleSources }
             .map { role == .source ? $0.sourcePath : $0.targetPath }
             .filter { !$0.isEmpty && seen.insert($0).inserted }
             .prefix(8)
@@ -188,9 +191,56 @@ final class TransferStore: ObservableObject {
     func setPath(_ path: String, for role: LocationRole) {
         guard canEdit else { return }
         inputErrors[role] = nil
+        var updated = task
         switch role {
-        case .source: task.sourcePath = path
-        case .target: task.targetPath = path
+        case .source:
+            updated.sourcePath = path
+            updated.sourceItems = []
+        case .target:
+            updated.targetPath = path
+        }
+        task = updated
+    }
+
+    /// Several folders picked, dropped or pasted at once. They are copied in one run from
+    /// the folder that holds them, so they must sit side by side in it.
+    func setSources(_ urls: [URL]) {
+        guard canEdit else { return }
+        var seen = Set<String>()
+        let paths = urls
+            .map { $0.standardizedFileURL.path }
+            .filter { seen.insert($0).inserted }
+        guard paths.count > 1 else {
+            if let path = paths.first { submitInput(path, for: .source) }
+            return
+        }
+
+        let parents = Set(paths.map { URL(fileURLWithPath: $0).deletingLastPathComponent().path })
+        let names = paths.map { URL(fileURLWithPath: $0).lastPathComponent }
+        guard parents.count == 1, let parent = parents.first,
+              names.allSatisfy({ !$0.isEmpty && $0 != "/" }) else {
+            inputErrors[.source] = "一次选择多个文件夹时，它们需要在同一个文件夹里。"
+            return
+        }
+
+        Task {
+            // The folders may be on a share that has stalled.
+            let allFolders = await Task.detached(priority: .userInitiated) {
+                paths.allSatisfy { path in
+                    var isDirectory: ObjCBool = false
+                    return FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) && isDirectory.boolValue
+                }
+            }.value
+            guard canEdit else { return }
+            guard allFolders else {
+                inputErrors[.source] = "只能选择文件夹，不能选择单个文件。"
+                return
+            }
+            inputErrors[.source] = nil
+            var updated = task
+            updated.sourcePath = parent
+            updated.sourceItems = names.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+            task = updated
         }
     }
 
@@ -202,12 +252,17 @@ final class TransferStore: ObservableObject {
             let directory = await Task.detached(priority: .userInitiated) {
                 FileDialogs.startingDirectory(for: current)
             }.value
-            guard let path = FileDialogs.chooseFolder(
+            let paths = FileDialogs.chooseFolders(
                 startingAt: directory,
+                allowsMultipleSelection: role == .source,
                 canCreateDirectories: role == .target,
-                message: role == .source ? "选择要复制的文件夹" : "选择复制到哪里"
-            ) else { return }
-            setPath(path, for: role)
+                message: role == .source ? "选择要复制的文件夹（按住 ⌘ 可以多选）" : "选择复制到哪里"
+            )
+            if role == .source, paths.count > 1 {
+                setSources(paths.map { URL(fileURLWithPath: $0, isDirectory: true) })
+            } else if let path = paths.first {
+                setPath(path, for: role)
+            }
         }
     }
 
@@ -236,7 +291,11 @@ final class TransferStore: ObservableObject {
         let pasteboard = NSPasteboard.general
         if let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL],
            let first = urls.first {
-            submitInput(first.path, for: role)
+            if role == .source, urls.count > 1 {
+                setSources(urls)
+            } else {
+                submitInput(first.path, for: role)
+            }
         } else if let text = pasteboard.string(forType: .string) {
             submitInput(text, for: role)
         } else {
@@ -246,15 +305,21 @@ final class TransferStore: ObservableObject {
 
     func handleDrop(_ urls: [URL], on role: LocationRole) -> Bool {
         guard canEdit, let url = urls.first else { return false }
-        submitInput(url.path, for: role)
+        if role == .source, urls.count > 1 {
+            setSources(urls)
+        } else {
+            submitInput(url.path, for: role)
+        }
         return true
     }
 
     func swapLocations() {
-        guard canEdit else { return }
-        let source = task.sourcePath
-        task.sourcePath = task.targetPath
-        task.targetPath = source
+        // Several source folders have no single folder to become the target.
+        guard canEdit, !task.hasMultipleSources else { return }
+        var updated = task
+        updated.sourcePath = task.targetPath
+        updated.targetPath = task.sourcePath
+        task = updated
         inputErrors = [:]
     }
 
@@ -677,7 +742,7 @@ final class TransferStore: ObservableObject {
             task.isPinned = false
             task.name = ""
         }
-        if old.sourcePath != task.sourcePath {
+        if old.sourcePath != task.sourcePath || old.sourceItems != task.sourceItems {
             refreshLocationStatus(.source)
         }
         if old.targetPath != task.targetPath {
@@ -687,6 +752,8 @@ final class TransferStore: ObservableObject {
 
     private func refreshLocationStatus(_ role: LocationRole) {
         let path = path(for: role)
+        // Every selected source folder must be reachable, not just their parent.
+        let folders = role == .source ? task.sourceFolderPaths : [path]
         locationTasks[role]?.cancel()
         guard !path.isEmpty else {
             setStatus(LocationStatus(), for: role)
@@ -698,15 +765,18 @@ final class TransferStore: ObservableObject {
 
         locationTasks[role] = Task {
             let result = await Task.detached(priority: .userInitiated) { () -> LocationStatus in
-                var isDirectory: ObjCBool = false
-                let exists = FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) && isDirectory.boolValue
+                let exists = folders.allSatisfy { folder in
+                    var isDirectory: ObjCBool = false
+                    return FileManager.default.fileExists(atPath: folder, isDirectory: &isDirectory) && isDirectory.boolValue
+                }
                 return LocationStatus(
                     isChecking: false,
                     exists: exists,
                     volume: exists ? VolumeCatalog.describe(path: path) : nil
                 )
             }.value
-            guard !Task.isCancelled, self.path(for: role) == path else { return }
+            let currentFolders = role == .source ? self.task.sourceFolderPaths : [self.path(for: role)]
+            guard !Task.isCancelled, currentFolders == folders else { return }
             setStatus(result, for: role)
         }
     }
@@ -771,6 +841,16 @@ final class TransferStore: ObservableObject {
     // MARK: - Finder helpers
 
     func revealInFinder(_ role: LocationRole) {
+        if role == .source, task.hasMultipleSources {
+            let folders = task.sourceFolderPaths
+            Task {
+                let existing = await Task.detached(priority: .userInitiated) {
+                    folders.filter { FileManager.default.fileExists(atPath: $0) }
+                }.value
+                NSWorkspace.shared.activateFileViewerSelecting(existing.map { URL(fileURLWithPath: $0, isDirectory: true) })
+            }
+            return
+        }
         let path = role == .source ? task.sourcePath : task.resolvedTargetPath
         let fallback = task.targetPath
         guard !path.isEmpty else { return }
