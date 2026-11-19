@@ -77,6 +77,14 @@ final class TransferStore: ObservableObject {
     private var pollTask: Task<Void, Never>?
     private var locationTasks: [LocationRole: Task<Void, Never>] = [:]
     private var activeDestinationSnapshot: DestinationPathPolicy.Snapshot?
+    /// Destination volume of the current run, read in the preflight.
+    private var activeDestinationVolume: VolumeTraits?
+    private var cleanupTask: Task<CleanupOutcome, Never>?
+    /// Bumped when a cleanup starts or is abandoned, so a late result is ignored.
+    private var cleanupGeneration = 0
+    /// What the cleanup did, as a clause for the final headline; nil when there is
+    /// nothing worth saying (no cleanup, or nothing to clean).
+    private var cleanupNote: String?
     private var copyProgress: TransferProgress?
     private var activity: NSObjectProtocol?
     private var workspaceObservers: [NSObjectProtocol] = []
@@ -134,7 +142,7 @@ final class TransferStore: ObservableObject {
     }
 
     var canStop: Bool {
-        status.isRunningProcess
+        status.isRunningProcess || status == .cleaning
     }
 
     var pinnedRoutes: [TransferTask] {
@@ -154,13 +162,15 @@ final class TransferStore: ObservableObject {
         if !targetStatus.isChecking, !targetStatus.exists {
             return "目标位置当前无法访问，共享可能已断开。"
         }
-        let source = URL(fileURLWithPath: task.sourcePath).standardizedFileURL.path
-        let target = URL(fileURLWithPath: task.resolvedTargetPath).standardizedFileURL.path
-        if source == target {
-            return "源和目标是同一个文件夹。"
-        }
-        if PathInspector.isSameOrInside(target, source) {
-            return "目标位于源文件夹内部，请换一个目标。"
+        for pair in task.copyPairs {
+            let source = URL(fileURLWithPath: pair.source).standardizedFileURL.path
+            let target = URL(fileURLWithPath: pair.destination).standardizedFileURL.path
+            if source == target {
+                return "源和目标是同一个文件夹。"
+            }
+            if PathInspector.isSameOrInside(target, source) {
+                return "目标位于源文件夹内部，请换一个目标。"
+            }
         }
         return nil
     }
@@ -177,6 +187,7 @@ final class TransferStore: ObservableObject {
     func recentPaths(for role: LocationRole) -> [String] {
         var seen = Set<String>()
         return routes
+            .filter { role == .target || !$0.hasMultipleSources }
             .map { role == .source ? $0.sourcePath : $0.targetPath }
             .filter { !$0.isEmpty && seen.insert($0).inserted }
             .prefix(8)
@@ -188,9 +199,56 @@ final class TransferStore: ObservableObject {
     func setPath(_ path: String, for role: LocationRole) {
         guard canEdit else { return }
         inputErrors[role] = nil
+        var updated = task
         switch role {
-        case .source: task.sourcePath = path
-        case .target: task.targetPath = path
+        case .source:
+            updated.sourcePath = path
+            updated.sourceItems = []
+        case .target:
+            updated.targetPath = path
+        }
+        task = updated
+    }
+
+    /// Several folders picked, dropped or pasted at once. They are copied in one run from
+    /// the folder that holds them, so they must sit side by side in it.
+    func setSources(_ urls: [URL]) {
+        guard canEdit else { return }
+        var seen = Set<String>()
+        let paths = urls
+            .map { $0.standardizedFileURL.path }
+            .filter { seen.insert($0).inserted }
+        guard paths.count > 1 else {
+            if let path = paths.first { submitInput(path, for: .source) }
+            return
+        }
+
+        let parents = Set(paths.map { URL(fileURLWithPath: $0).deletingLastPathComponent().path })
+        let names = paths.map { URL(fileURLWithPath: $0).lastPathComponent }
+        guard parents.count == 1, let parent = parents.first,
+              names.allSatisfy({ !$0.isEmpty && $0 != "/" }) else {
+            inputErrors[.source] = "一次选择多个文件夹时，它们需要在同一个文件夹里。"
+            return
+        }
+
+        Task {
+            // The folders may be on a share that has stalled.
+            let allFolders = await Task.detached(priority: .userInitiated) {
+                paths.allSatisfy { path in
+                    var isDirectory: ObjCBool = false
+                    return FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) && isDirectory.boolValue
+                }
+            }.value
+            guard canEdit else { return }
+            guard allFolders else {
+                inputErrors[.source] = "只能选择文件夹，不能选择单个文件。"
+                return
+            }
+            inputErrors[.source] = nil
+            var updated = task
+            updated.sourcePath = parent
+            updated.sourceItems = names.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+            task = updated
         }
     }
 
@@ -202,12 +260,17 @@ final class TransferStore: ObservableObject {
             let directory = await Task.detached(priority: .userInitiated) {
                 FileDialogs.startingDirectory(for: current)
             }.value
-            guard let path = FileDialogs.chooseFolder(
+            let paths = FileDialogs.chooseFolders(
                 startingAt: directory,
+                allowsMultipleSelection: role == .source,
                 canCreateDirectories: role == .target,
-                message: role == .source ? "选择要复制的文件夹" : "选择复制到哪里"
-            ) else { return }
-            setPath(path, for: role)
+                message: role == .source ? "选择要复制的文件夹（按住 ⌘ 可以多选）" : "选择复制到哪里"
+            )
+            if role == .source, paths.count > 1 {
+                setSources(paths.map { URL(fileURLWithPath: $0, isDirectory: true) })
+            } else if let path = paths.first {
+                setPath(path, for: role)
+            }
         }
     }
 
@@ -236,7 +299,11 @@ final class TransferStore: ObservableObject {
         let pasteboard = NSPasteboard.general
         if let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL],
            let first = urls.first {
-            submitInput(first.path, for: role)
+            if role == .source, urls.count > 1 {
+                setSources(urls)
+            } else {
+                submitInput(first.path, for: role)
+            }
         } else if let text = pasteboard.string(forType: .string) {
             submitInput(text, for: role)
         } else {
@@ -246,15 +313,21 @@ final class TransferStore: ObservableObject {
 
     func handleDrop(_ urls: [URL], on role: LocationRole) -> Bool {
         guard canEdit, let url = urls.first else { return false }
-        submitInput(url.path, for: role)
+        if role == .source, urls.count > 1 {
+            setSources(urls)
+        } else {
+            submitInput(url.path, for: role)
+        }
         return true
     }
 
     func swapLocations() {
-        guard canEdit else { return }
-        let source = task.sourcePath
-        task.sourcePath = task.targetPath
-        task.targetPath = source
+        // Several source folders have no single folder to become the target.
+        guard canEdit, !task.hasMultipleSources else { return }
+        var updated = task
+        updated.sourcePath = task.targetPath
+        updated.targetPath = task.sourcePath
+        task = updated
         inputErrors = [:]
     }
 
@@ -285,6 +358,7 @@ final class TransferStore: ObservableObject {
         }
         fresh.verifyAfterCopy = task.verifyAfterCopy
         fresh.checkFirst = task.checkFirst
+        fresh.cleanSidecars = task.cleanSidecars
         task = fresh
         resetRunState(message: "拖入或选择源文件夹和目标位置。")
     }
@@ -364,6 +438,10 @@ final class TransferStore: ObservableObject {
 
     func stop() {
         guard canStop else { return }
+        if status == .cleaning {
+            interruptCleanup()
+            return
+        }
         isStopping = true
         status = .stopping
         headline = "正在停止…已经复制完的文件下次会自动跳过。"
@@ -372,6 +450,11 @@ final class TransferStore: ObservableObject {
 
     /// Stops rclone synchronously-enough for app termination.
     func stopForTermination() {
+        if status == .cleaning {
+            // Records the finished copy before the app goes away.
+            interruptCleanup()
+            return
+        }
         guard runner.isRunning else { return }
         isStopping = true
         runner.stop()
@@ -388,6 +471,8 @@ final class TransferStore: ObservableObject {
         lastResult = nil
         isDryRunResult = dryRun
         activeDestinationSnapshot = nil
+        activeDestinationVolume = nil
+        cleanupNote = nil
         copyProgress = nil
         monitor.reset()
 
@@ -404,21 +489,34 @@ final class TransferStore: ObservableObject {
                 status = .failed
                 headline = message
                 failureDetails = preflight.items.filter { $0.severity == .error }.map(\.message)
-            case let .ready(rclone, snapshot, streamLocalCopies):
+            case let .ready(rclone, snapshot, streamLocalCopies, destinationVolume):
                 if rclone != rclonePath { rclonePath = rclone }
                 // The destination was re-validated as the last step of the preflight,
                 // so rclone starts one main-actor hop after that check.
-                launch(dryRun: dryRun, rclone: rclone, snapshot: snapshot, streamLocalCopies: streamLocalCopies)
+                launch(
+                    dryRun: dryRun,
+                    rclone: rclone,
+                    snapshot: snapshot,
+                    streamLocalCopies: streamLocalCopies,
+                    destinationVolume: destinationVolume
+                )
             }
         }
     }
 
     /// `snapshot` is nil for dry runs, which create nothing on the destination.
-    private func launch(dryRun: Bool, rclone: String, snapshot: DestinationPathPolicy.Snapshot?, streamLocalCopies: Bool) {
+    private func launch(
+        dryRun: Bool,
+        rclone: String,
+        snapshot: DestinationPathPolicy.Snapshot?,
+        streamLocalCopies: Bool,
+        destinationVolume: VolumeTraits?
+    ) {
         startedAt = Date()
         finishedAt = nil
         isStopping = false
         activeDestinationSnapshot = snapshot
+        activeDestinationVolume = destinationVolume
 
         do {
             let remote = try RcloneRemoteControl.makeLocal()
@@ -427,6 +525,7 @@ final class TransferStore: ObservableObject {
                 task: task,
                 dryRun: dryRun,
                 streamLocalCopies: streamLocalCopies,
+                destinationFileSystem: destinationVolume?.fileSystem,
                 remote: remote,
                 onFinish: { [weak self] exitCode, output in
                     self?.finishCopy(exitCode: exitCode, output: output, dryRun: dryRun)
@@ -463,24 +562,118 @@ final class TransferStore: ObservableObject {
         }
 
         monitor.markSucceeded()
-        if !dryRun, task.verifyAfterCopy {
+        if dryRun {
+            let progress = monitor.progress
+            let message = progress.totalTransfers == 0
+                ? "预演完成：目标已是最新，没有需要复制的文件。"
+                : "预演完成：将复制 \(TransferFormatters.integer(progress.totalTransfers)) 个文件，共 \(TransferFormatters.byteCount(progress.totalBytes))。"
+            complete(outcome: .dryRun, headline: message)
+            return
+        }
+
+        // Only after a copy that finished cleanly: an interrupted or failed run leaves its
+        // sidecars for the next successful one, which scans the whole destination.
+        if task.cleanSidecars, activeDestinationVolume?.storesExtendedAttributesNatively == false {
+            startCleanup()
+            return
+        }
+        continueAfterCleanup()
+    }
+
+    /// Verification (if enabled) or the end of the run, once the copy and its cleanup are done.
+    private func continueAfterCleanup() {
+        if task.verifyAfterCopy {
             copyProgress = monitor.progress
             startVerification()
             return
         }
-
-        let progress = monitor.progress
         let message: String
-        if dryRun {
-            message = progress.totalTransfers == 0
-                ? "预演完成：目标已是最新，没有需要复制的文件。"
-                : "预演完成：将复制 \(TransferFormatters.integer(progress.totalTransfers)) 个文件，共 \(TransferFormatters.byteCount(progress.totalBytes))。"
+        if monitor.progress.totalTransfers == 0 {
+            message = cleanupNote.map { "完成：目标已是最新，\($0)。" } ?? "完成：目标已是最新，没有需要复制的文件。"
         } else {
-            message = progress.totalTransfers == 0
-                ? "完成：目标已是最新，没有需要复制的文件。"
-                : "复制完成。"
+            message = "\(copiedPrefix)。"
         }
-        complete(outcome: dryRun ? .dryRun : .completed, headline: message)
+        complete(outcome: .completed, headline: message)
+    }
+
+    /// "复制完成", plus what the cleanup did when that is worth mentioning.
+    private var copiedPrefix: String {
+        cleanupNote.map { "复制完成，\($0)" } ?? "复制完成"
+    }
+
+    // MARK: - Sidecar cleanup
+
+    private enum CleanupOutcome: Sendable {
+        case finished(SidecarCleaner.Result)
+        case unsafeDestination(String)
+    }
+
+    private func startCleanup() {
+        status = .cleaning
+        headline = "复制完成，正在清理 macOS 生成的 ._ 文件…"
+        let snapshot = activeDestinationSnapshot
+        let folders = task.copyPairs.map(\.destination)
+        cleanupGeneration += 1
+        let generation = cleanupGeneration
+
+        let job = Task.detached(priority: .utility) { () -> CleanupOutcome in
+            // Same guard as the verification: the destination must still be the folder
+            // the preflight checked before anything in it is deleted.
+            guard let snapshot else { return .unsafeDestination(DestinationPathPolicy.PolicyError.emptyPath.localizedDescription) }
+            do {
+                try DestinationPathPolicy.validate(snapshot)
+            } catch {
+                return .unsafeDestination(error.localizedDescription)
+            }
+            let cleaner = SidecarCleaner(isCancelled: { Task.isCancelled })
+            return .finished(cleaner.clean(
+                folders: folders,
+                selectedRoot: snapshot.selectedRoot.path,
+                device: snapshot.destinationIdentity.device
+            ))
+        }
+        cleanupTask = job
+
+        Task {
+            let outcome = await job.value
+            guard generation == cleanupGeneration, status == .cleaning else { return }
+            cleanupTask = nil
+            finishCleanup(outcome)
+        }
+    }
+
+    private func finishCleanup(_ outcome: CleanupOutcome) {
+        finishedAt = Date()
+        switch outcome {
+        case let .finished(result):
+            cleanupNote = Self.cleanupNote(for: result)
+        case let .unsafeDestination(message):
+            // Never changes the copy's outcome; only reported.
+            cleanupNote = "但没有清理 ._ 文件：\(message)"
+        }
+        continueAfterCleanup()
+    }
+
+    /// Stop pressed (or the app quitting) while cleaning: the copy itself is done, so the
+    /// run ends as completed right away instead of waiting on a possibly stalled disk.
+    private func interruptCleanup() {
+        cleanupTask?.cancel()
+        cleanupTask = nil
+        cleanupGeneration += 1
+        finishedAt = Date()
+        complete(outcome: .completed, headline: "复制已完成，清理已中断。")
+    }
+
+    /// nil when there was nothing to clean, so the headline stays as it was.
+    nonisolated static func cleanupNote(for result: SidecarCleaner.Result) -> String? {
+        let deleted = TransferFormatters.integer(result.deleted)
+        let failed = TransferFormatters.integer(result.failed)
+        switch (result.deleted > 0, result.failed > 0) {
+        case (true, false): return "已清理 \(deleted) 个 ._ 文件"
+        case (true, true): return "已清理 \(deleted) 个 ._ 文件，\(failed) 个没能删除"
+        case (false, true): return "但有 \(failed) 个 ._ 文件没能删除"
+        case (false, false): return nil
+        }
     }
 
     private func startVerification() {
@@ -510,9 +703,9 @@ final class TransferStore: ObservableObject {
             }
             switch prepared {
             case let .failure(.unsafeDestination(message)):
-                complete(outcome: .failed, headline: "复制完成，但目标路径安全检查失败：\(message)")
+                complete(outcome: .failed, headline: "\(copiedPrefix)，但目标路径安全检查失败：\(message)")
             case .failure(.missingRclone):
-                complete(outcome: .failed, headline: "复制完成，但找不到 rclone，无法校验。")
+                complete(outcome: .failed, headline: "\(copiedPrefix)，但找不到 rclone，无法校验。")
             case let .success(rclone):
                 launchVerification(rclone: rclone)
             }
@@ -535,11 +728,11 @@ final class TransferStore: ObservableObject {
                     self?.finishVerification(exitCode: exitCode, output: output)
                 }
             )
-            headline = "复制完成，正在按文件大小校验…"
+            headline = "\(copiedPrefix)，正在按文件大小校验…"
             monitor.reset()
             startPolling(remote: remote, verifying: true)
         } catch {
-            complete(outcome: .failed, headline: "复制完成，但无法启动校验：\(error.localizedDescription)")
+            complete(outcome: .failed, headline: "\(copiedPrefix)，但无法启动校验：\(error.localizedDescription)")
         }
     }
 
@@ -558,13 +751,13 @@ final class TransferStore: ObservableObject {
 
         if exitCode == 0 {
             monitor.restore(copyProgress)
-            complete(outcome: .verified, headline: "复制完成，校验通过：所有文件大小一致。")
+            complete(outcome: .verified, headline: "\(copiedPrefix)，校验通过：所有文件大小一致。")
         } else {
             monitor.markStopped()
             recordFailure(output: output)
             let headline = RcloneOutput.reportsDifferences(output)
-                ? "复制完成，但校验发现差异。"
-                : "复制完成，但校验没能完成：\(RcloneRunner.describe(exitCode: exitCode))"
+                ? "\(copiedPrefix)，但校验发现差异。"
+                : "\(copiedPrefix)，但校验没能完成：\(RcloneRunner.describe(exitCode: exitCode))"
             complete(outcome: .failed, headline: headline)
         }
     }
@@ -677,7 +870,7 @@ final class TransferStore: ObservableObject {
             task.isPinned = false
             task.name = ""
         }
-        if old.sourcePath != task.sourcePath {
+        if old.sourcePath != task.sourcePath || old.sourceItems != task.sourceItems {
             refreshLocationStatus(.source)
         }
         if old.targetPath != task.targetPath {
@@ -687,6 +880,8 @@ final class TransferStore: ObservableObject {
 
     private func refreshLocationStatus(_ role: LocationRole) {
         let path = path(for: role)
+        // Every selected source folder must be reachable, not just their parent.
+        let folders = role == .source ? task.sourceFolderPaths : [path]
         locationTasks[role]?.cancel()
         guard !path.isEmpty else {
             setStatus(LocationStatus(), for: role)
@@ -698,15 +893,18 @@ final class TransferStore: ObservableObject {
 
         locationTasks[role] = Task {
             let result = await Task.detached(priority: .userInitiated) { () -> LocationStatus in
-                var isDirectory: ObjCBool = false
-                let exists = FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) && isDirectory.boolValue
+                let exists = folders.allSatisfy { folder in
+                    var isDirectory: ObjCBool = false
+                    return FileManager.default.fileExists(atPath: folder, isDirectory: &isDirectory) && isDirectory.boolValue
+                }
                 return LocationStatus(
                     isChecking: false,
                     exists: exists,
                     volume: exists ? VolumeCatalog.describe(path: path) : nil
                 )
             }.value
-            guard !Task.isCancelled, self.path(for: role) == path else { return }
+            let currentFolders = role == .source ? self.task.sourceFolderPaths : [self.path(for: role)]
+            guard !Task.isCancelled, currentFolders == folders else { return }
             setStatus(result, for: role)
         }
     }
@@ -771,6 +969,16 @@ final class TransferStore: ObservableObject {
     // MARK: - Finder helpers
 
     func revealInFinder(_ role: LocationRole) {
+        if role == .source, task.hasMultipleSources {
+            let folders = task.sourceFolderPaths
+            Task {
+                let existing = await Task.detached(priority: .userInitiated) {
+                    folders.filter { FileManager.default.fileExists(atPath: $0) }
+                }.value
+                NSWorkspace.shared.activateFileViewerSelecting(existing.map { URL(fileURLWithPath: $0, isDirectory: true) })
+            }
+            return
+        }
         let path = role == .source ? task.sourcePath : task.resolvedTargetPath
         let fallback = task.targetPath
         guard !path.isEmpty else { return }
@@ -885,7 +1093,14 @@ private enum Preflight {
     enum Outcome {
         case blocked(String)
         /// `snapshot` is nil for dry runs.
-        case ready(rclone: String, snapshot: DestinationPathPolicy.Snapshot?, streamLocalCopies: Bool)
+        /// `destinationVolume` is nil when the volume could not be read; the run then gets
+        /// neither `--modify-window` nor a cleanup.
+        case ready(
+            rclone: String,
+            snapshot: DestinationPathPolicy.Snapshot?,
+            streamLocalCopies: Bool,
+            destinationVolume: VolumeTraits?
+        )
     }
 
     struct Result {
@@ -904,18 +1119,30 @@ private enum Preflight {
         let streamLocalCopies = RcloneCapabilities.supportsLocalNoClone(rclonePath: rclone)
 
         guard !dryRun else {
-            return Result(items: precheck.items, outcome: .ready(rclone: rclone, snapshot: nil, streamLocalCopies: streamLocalCopies))
+            // The destination folder may not exist yet; its volume is the target's.
+            return Result(items: precheck.items, outcome: .ready(
+                rclone: rclone,
+                snapshot: nil,
+                streamLocalCopies: streamLocalCopies,
+                destinationVolume: VolumeCatalog.traits(path: task.targetPath)
+            ))
         }
         guard let snapshot = precheck.destination else {
             return Result(items: precheck.items, outcome: .blocked("目标路径安全检查失败。"))
         }
+        let destinationVolume = VolumeCatalog.traits(path: snapshot.destination.path)
         do {
             // Last step before rclone starts: the destination must still be the folder
             // that was checked (no swap for a symlink while the capability probe ran).
             try DestinationPathPolicy.validate(snapshot)
             return Result(
                 items: precheck.items,
-                outcome: .ready(rclone: rclone, snapshot: snapshot, streamLocalCopies: streamLocalCopies)
+                outcome: .ready(
+                    rclone: rclone,
+                    snapshot: snapshot,
+                    streamLocalCopies: streamLocalCopies,
+                    destinationVolume: destinationVolume
+                )
             )
         } catch {
             return Result(items: precheck.items, outcome: .blocked("目标路径安全检查失败：\(error.localizedDescription)"))

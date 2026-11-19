@@ -16,13 +16,18 @@ final class RcloneRunner {
         task: TransferTask,
         dryRun: Bool,
         streamLocalCopies: Bool,
+        destinationFileSystem: String?,
         remote: RcloneRemoteControl,
         onFinish: @escaping @MainActor (Int32, String) -> Void
     ) throws {
         try start(
             rclonePath: rclonePath,
-            arguments: makeArguments(task: task, dryRun: dryRun, streamLocalCopies: streamLocalCopies)
-                + remote.arguments,
+            arguments: makeArguments(
+                task: task,
+                dryRun: dryRun,
+                streamLocalCopies: streamLocalCopies,
+                destinationFileSystem: destinationFileSystem
+            ) + remote.arguments,
             environment: remote.environment,
             onFinish: onFinish
         )
@@ -96,7 +101,14 @@ final class RcloneRunner {
         process.terminate()
     }
 
-    func makeArguments(task: TransferTask, dryRun: Bool, streamLocalCopies: Bool = false) -> [String] {
+    /// `destinationFileSystem` is the destination volume's `f_fstypename`, read off the
+    /// main thread beforehand; nil when unknown.
+    func makeArguments(
+        task: TransferTask,
+        dryRun: Bool,
+        streamLocalCopies: Bool = false,
+        destinationFileSystem: String? = nil
+    ) -> [String] {
         var arguments = [
             "copy",
             task.sourcePath,
@@ -117,6 +129,10 @@ final class RcloneRunner {
             arguments.append("--local-no-clone")
         }
 
+        if let window = Self.modifyWindow(forFileSystem: destinationFileSystem) {
+            arguments.append(contentsOf: ["--modify-window", window])
+        }
+
         arguments.append(contentsOf: [
             "--transfers", "\(task.transfers)",
             "--checkers", "\(task.checkers)",
@@ -124,10 +140,7 @@ final class RcloneRunner {
             "--low-level-retries", "\(task.lowLevelRetries)"
         ])
 
-        for exclude in task.excludes {
-            arguments.append(contentsOf: ["--exclude", exclude])
-        }
-
+        arguments.append(contentsOf: filterArguments(task: task))
         arguments.append(contentsOf: quietConsole)
         return arguments
     }
@@ -141,11 +154,35 @@ final class RcloneRunner {
             "--one-way",
             "--checkers", "\(task.checkers)"
         ]
-        for exclude in task.excludes {
-            arguments.append(contentsOf: ["--exclude", exclude])
-        }
+        arguments.append(contentsOf: filterArguments(task: task))
         arguments.append(contentsOf: quietConsole)
         return arguments
+    }
+
+    /// A single folder only needs the excludes. Several folders are copied in one run from
+    /// their shared parent, so the filter keeps only those folders. Everything is written as
+    /// `--filter` there, because rclone applies `--filter` rules in command-line order but
+    /// groups `--exclude` rules separately.
+    private func filterArguments(task: TransferTask) -> [String] {
+        guard task.hasMultipleSources else {
+            return task.excludes.flatMap { ["--exclude", $0] }
+        }
+        var rules = task.excludes.map { "- \($0)" }
+        rules += task.sourceItems.map { "+ /\(Self.escapeGlob($0))/**" }
+        rules.append("- **")
+        return rules.flatMap { ["--filter", $0] }
+    }
+
+    /// Folder names are matched literally, not as glob patterns.
+    static func escapeGlob(_ name: String) -> String {
+        var escaped = ""
+        for character in name {
+            if "\\*?[]{}".contains(character) {
+                escaped.append("\\")
+            }
+            escaped.append(character)
+        }
+        return escaped
     }
 
     /// Errors and notices only, as JSON lines. The UI polls rc for live numbers; the
@@ -159,6 +196,15 @@ final class RcloneRunner {
             "--stats-log-level", "NOTICE",
             "--stats-one-line"
         ]
+    }
+
+    /// exFAT keeps modification times to 10 ms and FAT to 2 s, against nanoseconds on APFS.
+    /// Without a window rclone sees every file already on such a disk as changed: it hashes
+    /// both sides and rewrites the time, which also makes macOS write a fresh `._` sidecar.
+    /// 2 s covers FAT. Only `copy` gets it; the verification is `--size-only` anyway.
+    static func modifyWindow(forFileSystem fileSystem: String?) -> String? {
+        guard let fileSystem else { return nil }
+        return ["exfat", "msdos"].contains(fileSystem.lowercased()) ? "2s" : nil
     }
 
     /// rclone exit codes, see https://rclone.org/docs/#exit-code

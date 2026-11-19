@@ -3,6 +3,49 @@ import XCTest
 @testable import DiskFerry
 
 final class TransferTaskTests: XCTestCase {
+    func testSeveralSourceFoldersLandSideBySide() {
+        var task = TransferTask.empty
+        task.sourcePath = "/Volumes/PhotoDisk"
+        task.sourceItems = ["2024", "2025"]
+        task.targetPath = "/Volumes/minipc/Backup"
+        task.targetLayout = .merge
+
+        XCTAssertEqual(task.resolvedTargetPath, "/Volumes/minipc/Backup")
+        XCTAssertEqual(task.sourceFolderPaths, ["/Volumes/PhotoDisk/2024", "/Volumes/PhotoDisk/2025"])
+        XCTAssertEqual(task.copyPairs.map(\.destination), ["/Volumes/minipc/Backup/2024", "/Volumes/minipc/Backup/2025"])
+        XCTAssertEqual(task.displayName, "2024 等 2 个文件夹 → Backup")
+
+        var single = task
+        single.sourceItems = []
+        XCTAssertFalse(task.hasSameRoute(as: single))
+    }
+
+    func testSourceItemsRoundTripAndDefaultToEmpty() throws {
+        var task = TransferTask.empty
+        task.sourcePath = "/Volumes/PhotoDisk"
+        task.sourceItems = ["A", "B"]
+        let data = try JSONCoding.encoder.encode([task])
+        XCTAssertEqual(try JSONCoding.decoder.decode([TransferTask].self, from: data).first?.sourceItems, ["A", "B"])
+
+        let legacy = #"[{"id": "x", "sourcePath": "/a", "targetPath": "/b"}]"#
+        XCTAssertEqual(try JSONCoding.decoder.decode([TransferTask].self, from: Data(legacy.utf8)).first?.sourceItems, [])
+    }
+
+    /// The cleanup defaults to on, including for routes saved before the option existed.
+    func testCleanSidecarsDefaultsToOnAndRoundTrips() throws {
+        XCTAssertTrue(TransferTask.empty.cleanSidecars)
+
+        let legacy = #"[{"id": "x", "sourcePath": "/a", "targetPath": "/b", "verifyAfterCopy": true}]"#
+        XCTAssertEqual(try JSONCoding.decoder.decode([TransferTask].self, from: Data(legacy.utf8)).first?.cleanSidecars, true)
+
+        var task = TransferTask.empty
+        task.sourcePath = "/a"
+        task.targetPath = "/b"
+        task.cleanSidecars = false
+        let data = try JSONCoding.encoder.encode([task])
+        XCTAssertEqual(try JSONCoding.decoder.decode([TransferTask].self, from: data).first?.cleanSidecars, false)
+    }
+
     func testIntoFolderLayoutNestsSourceName() {
         var task = TransferTask.empty
         task.sourcePath = "/Volumes/PhotoDisk/Photos"

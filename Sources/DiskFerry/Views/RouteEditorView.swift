@@ -20,7 +20,11 @@ struct RouteEditorView: View {
                 .background(Color(nsColor: .controlBackgroundColor), in: Circle())
                 .overlay(Circle().strokeBorder(Color(nsColor: .separatorColor)))
                 .help("交换源和目标")
-                .disabled(!store.canEdit || (store.task.sourcePath.isEmpty && store.task.targetPath.isEmpty))
+                .disabled(
+                    !store.canEdit
+                        || store.task.hasMultipleSources
+                        || (store.task.sourcePath.isEmpty && store.task.targetPath.isEmpty)
+                )
 
                 LocationCard(store: store, role: .target)
             }
@@ -51,18 +55,13 @@ private struct DestinationPreview: View {
 
             Spacer(minLength: 8)
 
-            Picker("", selection: Binding(
-                get: { store.task.targetLayout },
-                set: { store.setLayout($0) }
-            )) {
-                Text("放进“\(store.task.sourceName)”文件夹").tag(TargetLayout.intoFolder)
-                Text("直接合并到目标").tag(TargetLayout.merge)
+            if store.task.hasMultipleSources {
+                Text("每个文件夹各放进一个同名文件夹")
+                    .foregroundStyle(.secondary)
+                    .fixedSize()
+            } else {
+                layoutPicker
             }
-            .pickerStyle(.menu)
-            .labelsHidden()
-            .fixedSize()
-            .disabled(!store.canEdit)
-            .help("放进同名文件夹：和 Finder 拖拽一样。\n直接合并：源文件夹里的内容直接写进目标文件夹。")
         }
         .font(.callout)
 
@@ -71,6 +70,21 @@ private struct DestinationPreview: View {
                 .font(.callout)
                 .foregroundStyle(.orange)
         }
+    }
+
+    private var layoutPicker: some View {
+        Picker("", selection: Binding(
+            get: { store.task.targetLayout },
+            set: { store.setLayout($0) }
+        )) {
+            Text("放进“\(store.task.sourceName)”文件夹").tag(TargetLayout.intoFolder)
+            Text("直接合并到目标").tag(TargetLayout.merge)
+        }
+        .pickerStyle(.menu)
+        .labelsHidden()
+        .fixedSize()
+        .disabled(!store.canEdit)
+        .help("放进同名文件夹：和 Finder 拖拽一样。\n直接合并：源文件夹里的内容直接写进目标文件夹。")
     }
 }
 
@@ -86,6 +100,12 @@ struct LocationCard: View {
     @FocusState private var fieldFocused: Bool
 
     private var path: String { store.path(for: role) }
+    /// Folders selected together inside `path`; empty for a single folder.
+    private var selectedItems: [String] { role == .source ? store.task.sourceItems : [] }
+
+    private var title: String {
+        selectedItems.isEmpty ? URL(fileURLWithPath: path).lastPathComponent : selectedItems.joined(separator: "、")
+    }
     private var status: LocationStatus { store.locationStatus(for: role) }
 
     var body: some View {
@@ -164,7 +184,9 @@ struct LocationCard: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(role.emptyTitle)
                     .font(.headline)
-                Text("把文件夹拖到这里，或粘贴路径 / smb:// 地址")
+                Text(role == .source
+                     ? "把文件夹拖到这里（可以一次拖多个），或粘贴路径 / smb:// 地址"
+                     : "把文件夹拖到这里，或粘贴路径 / smb:// 地址")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -180,10 +202,16 @@ struct LocationCard: View {
                 .frame(width: 30)
 
             VStack(alignment: .leading, spacing: 3) {
-                Text(URL(fileURLWithPath: path).lastPathComponent)
+                Text(title)
                     .font(.title3.weight(.semibold))
                     .lineLimit(1)
-                    .truncationMode(.middle)
+                    .truncationMode(.tail)
+                    .help(selectedItems.joined(separator: "\n"))
+                if !selectedItems.isEmpty {
+                    Text("\(selectedItems.count) 个文件夹，位于：")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 Text(PathInspector.abbreviated(path))
                     .font(.system(.caption, design: .monospaced))
                     .foregroundStyle(.secondary)
@@ -277,7 +305,13 @@ struct LocationCard: View {
             if !path.isEmpty {
                 Section {
                     Button("在 Finder 中打开") { store.revealInFinder(role) }
-                    Button("拷贝路径") { store.copyPathToClipboard(path) }
+                    Button("拷贝路径") {
+                        store.copyPathToClipboard(
+                            role == .source && store.task.hasMultipleSources
+                                ? store.task.sourceFolderPaths.joined(separator: "\n")
+                                : path
+                        )
+                    }
                     Button("清除") { store.clearLocation(role) }
                 }
             }

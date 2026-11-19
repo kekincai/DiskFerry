@@ -15,17 +15,23 @@ enum FileDialogs {
         return fileManager.fileExists(atPath: "/Volumes") ? URL(fileURLWithPath: "/Volumes", isDirectory: true) : nil
     }
 
+    /// Returns the chosen folders; more than one only when `allowsMultipleSelection` is set.
     @MainActor
-    static func chooseFolder(startingAt directory: URL?, canCreateDirectories: Bool = false, message: String? = nil) -> String? {
+    static func chooseFolders(
+        startingAt directory: URL?,
+        allowsMultipleSelection: Bool = false,
+        canCreateDirectories: Bool = false,
+        message: String? = nil
+    ) -> [String] {
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = false
+        panel.allowsMultipleSelection = allowsMultipleSelection
         panel.canCreateDirectories = canCreateDirectories
         panel.prompt = "选择"
         panel.treatsFilePackagesAsDirectories = false
         panel.message = message ?? ""
         panel.directoryURL = directory
-        return panel.runModal() == .OK ? panel.url?.path : nil
+        return panel.runModal() == .OK ? panel.urls.map(\.path) : []
     }
 }

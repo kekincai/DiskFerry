@@ -55,6 +55,52 @@ final class PrecheckServiceSecurityTests: XCTestCase {
         XCTAssertTrue(nestedEntries.isEmpty, "precheck must not create folders inside the source")
     }
 
+    /// With several folders the target is checked against each of them: picking their
+    /// shared parent as the target would copy every folder onto itself.
+    func testPrecheckRejectsSeveralSourcesCopiedOntoThemselves() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        for folder in ["A", "B"] {
+            try FileManager.default.createDirectory(at: root.appendingPathComponent(folder), withIntermediateDirectories: true)
+        }
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        var task = TransferTask.empty
+        task.sourcePath = root.path
+        task.sourceItems = ["A", "B"]
+        task.targetPath = root.path
+        XCTAssertTrue(PrecheckService().run(task: task, rclonePath: "/usr/bin/true").items.contains {
+            $0.title == "路径检查" && $0.severity == .error
+        })
+
+        task.targetPath = root.appendingPathComponent("B/inner").path
+        try FileManager.default.createDirectory(atPath: task.targetPath, withIntermediateDirectories: true)
+        XCTAssertTrue(PrecheckService().run(task: task, rclonePath: "/usr/bin/true").items.contains {
+            $0.title == "路径检查" && $0.severity == .error
+        })
+
+        // A sibling folder of the selected ones is a fine target.
+        task.targetPath = root.appendingPathComponent("C").path
+        try FileManager.default.createDirectory(atPath: task.targetPath, withIntermediateDirectories: true)
+        let result = PrecheckService().run(task: task, rclonePath: "/usr/bin/true")
+        XCTAssertFalse(result.hasErrors, result.items.map(\.message).joined(separator: "\n"))
+    }
+
+    func testPrecheckReportsMissingSelectedSourceFolder() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("A"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("target"), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        var task = TransferTask.empty
+        task.sourcePath = root.path
+        task.sourceItems = ["A", "Gone"]
+        task.targetPath = root.appendingPathComponent("target").path
+        let result = PrecheckService().run(task: task, rclonePath: "/usr/bin/true", dryRun: true)
+        XCTAssertTrue(result.items.contains { $0.severity == .error && $0.message.contains("Gone") })
+    }
+
     func testDestinationSnapshotDetectsDirectoryReplacement() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)

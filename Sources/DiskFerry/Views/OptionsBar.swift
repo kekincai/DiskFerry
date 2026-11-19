@@ -75,6 +75,15 @@ private struct AdvancedOptionsView: View {
                     .textSelection(.enabled)
             }
 
+            VStack(alignment: .leading, spacing: 4) {
+                Toggle("清理 macOS 生成的 ._ 文件", isOn: $store.task.cleanSidecars)
+                    .toggleStyle(.checkbox)
+                Text("复制到 exFAT、FAT 这类磁盘时，macOS 会给每个文件附带一个 4KB 的 ._ 文件。开启后复制完成时自动删除，带标签等信息的不删。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             Divider()
 
             VStack(alignment: .leading, spacing: 6) {
@@ -104,10 +113,13 @@ private struct AdvancedOptionsView: View {
 
     private var commandPreview: String {
         guard store.task.isReady else { return "选择源和目标后显示。" }
+        // The target's file system comes from the off-main location check, so the
+        // preview shows `--modify-window` like the real run without touching the disk.
         let arguments = RcloneRunner().makeArguments(
             task: store.task,
             dryRun: false,
-            streamLocalCopies: store.rcloneSupportsLocalNoClone
+            streamLocalCopies: store.rcloneSupportsLocalNoClone,
+            destinationFileSystem: store.targetStatus.volume?.fileSystem
         )
         let rclone = store.rclonePath.isEmpty ? "rclone" : store.rclonePath
         return ([rclone] + arguments).map(shellQuote).joined(separator: " ")

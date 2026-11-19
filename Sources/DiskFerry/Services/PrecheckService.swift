@@ -19,13 +19,25 @@ struct PrecheckService {
             ))
         }
 
-        result.items.append(contentsOf: checkDirectory(
-            title: "源目录",
-            path: task.sourcePath,
-            mustBeReadable: true,
-            mustBeWritable: false,
-            missingMessage: "源目录不存在，可能是外置磁盘已经断开。"
-        ))
+        if task.hasMultipleSources {
+            for (name, path) in zip(task.sourceItems, task.sourceFolderPaths) {
+                result.items.append(contentsOf: checkDirectory(
+                    title: "源文件夹",
+                    path: path,
+                    mustBeReadable: true,
+                    mustBeWritable: false,
+                    missingMessage: "“\(name)”不存在，可能已被移动，或外置磁盘已经断开。"
+                ))
+            }
+        } else {
+            result.items.append(contentsOf: checkDirectory(
+                title: "源目录",
+                path: task.sourcePath,
+                mustBeReadable: true,
+                mustBeWritable: false,
+                missingMessage: "源目录不存在，可能是外置磁盘已经断开。"
+            ))
+        }
 
         result.items.append(contentsOf: checkDirectory(
             title: "目标目录",
@@ -38,12 +50,13 @@ struct PrecheckService {
         let resolvedTargetPath = task.resolvedTargetPath
         // Checked before DestinationPathPolicy.prepare, which creates folders.
         var hasPathConflict = false
-        if !task.sourcePath.isEmpty, !resolvedTargetPath.isEmpty {
-            let source = URL(fileURLWithPath: task.sourcePath).standardizedFileURL.path
-            let target = URL(fileURLWithPath: resolvedTargetPath).standardizedFileURL.path
+        for pair in task.copyPairs {
+            let source = URL(fileURLWithPath: pair.source).standardizedFileURL.path
+            let target = URL(fileURLWithPath: pair.destination).standardizedFileURL.path
             if source == target {
                 hasPathConflict = true
                 result.items.append(.init(title: "路径检查", message: "源目录和目标目录不能相同。", severity: .error))
+                break
             } else if PathInspector.resolvedIsSameOrInside(target, source) {
                 hasPathConflict = true
                 result.items.append(.init(
@@ -51,6 +64,7 @@ struct PrecheckService {
                     message: "目标就是源文件夹或位于其内部（可能经由符号链接或大小写不同的路径），复制会把自己复制进自己。请换一个目标。",
                     severity: .error
                 ))
+                break
             }
         }
 
